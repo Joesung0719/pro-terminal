@@ -9,7 +9,7 @@ import requests
 import datetime
 import os
 
-app = FastAPI(title="US Professional Radar War Room - V9.8 Ultimate Pro")
+app = FastAPI(title="US Professional Radar War Room - V9.8 Flagship Fully Integrated")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,25 +42,60 @@ def calculate_greeks(S, K, T, r, sigma, option_type="put"):
         "vega": float(round(vega, 4))
     }
 
+# 核心板塊代表池（可隨時擴充）
 MARKET_UNIVERSE = [
+    # 費半 SOX
     {"symbol": "NVDA", "name": "輝達", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "TSM", "name": "台積電 ADR", "sector": "SOX", "market": "NYSE"},
     {"symbol": "AMD", "name": "超微半導體", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "AVGO", "name": "博通", "sector": "SOX", "market": "NASDAQ"},
+    {"symbol": "QCOM", "name": "高通", "sector": "SOX", "market": "NASDAQ"},
+    {"symbol": "MU", "name": "美光科技", "sector": "SOX", "market": "NASDAQ"},
+    {"symbol": "INTC", "name": "英特爾", "sector": "SOX", "market": "NASDAQ"},
+    {"symbol": "ARM", "name": "安謀科技", "sector": "SOX", "market": "NASDAQ"},
+    {"symbol": "ASML", "name": "艾司摩爾", "sector": "SOX", "market": "NASDAQ"},
+    {"symbol": "TXN", "name": "德州儀器", "sector": "SOX", "market": "NASDAQ"},
+
+    # 那斯達克 100
     {"symbol": "AAPL", "name": "蘋果", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "MSFT", "name": "微軟", "sector": "NASDAQ", "market": "NASDAQ"},
-    {"symbol": "GOOGL", "name": "Alphabet", "sector": "NASDAQ", "market": "NASDAQ"},
+    {"symbol": "GOOGL", "name": "Alphabet (Google)", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "AMZN", "name": "亞馬遜", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "META", "name": "Meta 臉書", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "TSLA", "name": "特斯拉", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "NFLX", "name": "網飛 Netflix", "sector": "NASDAQ", "market": "NASDAQ"},
+    {"symbol": "COST", "name": "好市多 Costco", "sector": "NASDAQ", "market": "NASDAQ"},
+    {"symbol": "ADBE", "name": "奧多比 Adobe", "sector": "NASDAQ", "market": "NASDAQ"},
+    {"symbol": "COIN", "name": "Coinbase 加密所", "sector": "NASDAQ", "market": "NASDAQ"},
+
+    # 道瓊 30
+    {"symbol": "CAT", "name": "開拓重工", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "BA", "name": "波音公司", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "UNH", "name": "聯合健康集團", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "JNJ", "name": "嬌生生技", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "MCD", "name": "麥當勞", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "HD", "name": "家得寶 Home Depot", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "V", "name": "Visa 信用卡", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "WMT", "name": "沃爾瑪", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "IBM", "name": "國際商業機器 IBM", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "GS", "name": "高盛集團", "sector": "DOW", "market": "NYSE"},
+
+    # 紐約證交所主力
     {"symbol": "PLTR", "name": "帕蘭蒂爾科技", "sector": "NYSE", "market": "NYSE"},
     {"symbol": "JPM", "name": "摩根大通", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "BA", "name": "波音公司", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "CAT", "name": "開拓重工", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "BAC", "name": "美國銀行", "sector": "NYSE", "market": "NYSE"},
+    {"symbol": "XOM", "name": "埃克森美孚石油", "sector": "NYSE", "market": "NYSE"},
+    {"symbol": "CVX", "name": "雪佛龍能源", "sector": "NYSE", "market": "NYSE"},
+    {"symbol": "LLY", "name": "禮來藥廠", "sector": "NYSE", "market": "NYSE"},
+    {"symbol": "NKE", "name": "耐吉 Nike", "sector": "NYSE", "market": "NYSE"},
+    {"symbol": "UBER", "name": "優步 Uber", "sector": "NYSE", "market": "NYSE"},
+
+    # ETF 主力
     {"symbol": "SPY", "name": "標普500 ETF", "sector": "ETF", "market": "AMEX"},
-    {"symbol": "QQQ", "name": "那指100 ETF", "sector": "ETF", "market": "NASDAQ"},
-    {"symbol": "SOXX", "name": "費半 ETF", "sector": "ETF", "market": "NASDAQ"}
+    {"symbol": "QQQ", "name": "那斯達克100 ETF", "sector": "ETF", "market": "NASDAQ"},
+    {"symbol": "SOXX", "name": "費城半導體 ETF", "sector": "ETF", "market": "NASDAQ"},
+    {"symbol": "DIA", "name": "道瓊工業 ETF", "sector": "ETF", "market": "AMEX"},
+    {"symbol": "IWM", "name": "羅素2000小型股 ETF", "sector": "ETF", "market": "AMEX"}
 ]
 
 HTML_CONTENT = """
@@ -69,7 +104,7 @@ HTML_CONTENT = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>美股多空雷達戰情室 V9.8 ｜ 120MA ＆ 八大期權完全體</title>
+    <title>美股多空雷達戰情室 V9.8 旗艦完全體</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
@@ -93,7 +128,7 @@ HTML_CONTENT = """
         <div class="flex justify-between items-center">
             <div class="flex items-center space-x-2">
                 <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8</span>
-                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">120MA ＋ 八大期權</span>
+                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">台股標準完全體</span>
             </div>
             <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold shrink-0">🔄 刷新溫度計</button>
         </div>
@@ -119,35 +154,46 @@ HTML_CONTENT = """
 
     <!-- 主體區域 -->
     <div id="mainLayout" class="flex flex-1 overflow-hidden">
-        <!-- 左側：板塊清單 -->
+        <!-- 左側：多空方向切換 ＋ 板塊分類 ＋ 股票清單 -->
         <aside id="leftSidebar" class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col shrink-0">
             <div class="p-3 border-b border-[#1e293b] space-y-2">
-                <div class="flex justify-between items-center">
-                    <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">🎯 市場板塊分類</h2>
-                    <span class="text-[10px] text-emerald-400 font-bold bg-[#0b0e14] px-1.5 py-0.5 rounded border border-emerald-500/30">V9.8 爆量突破</span>
+                <!-- 1. 多空方向切換 (完全對齊台股 V9.8) -->
+                <div>
+                    <label class="text-[11px] text-slate-400 font-bold block mb-1">🎯 選股多空方向：</label>
+                    <div class="grid grid-cols-2 gap-1.5">
+                        <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#C0392B] text-white transition">📈 多方突破(創高)</button>
+                        <button onclick="setRadarMode('SHORT')" id="mode_short" class="py-1 rounded text-xs font-bold bg-[#1e293b] text-slate-400 hover:text-white transition">📉 空方破底(避險)</button>
+                    </div>
                 </div>
-                <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
-                    <option value="ALL">🌐 全市場精選大池 (全部標的)</option>
-                    <option value="SOX">⚡ 費城半導體 (SOX / 晶片軍火)</option>
-                    <option value="NASDAQ">💻 那斯達克 100 (科技核心主力)</option>
-                    <option value="DOW">🏛️ 道瓊工業 30 (傳統藍籌防守)</option>
-                    <option value="NYSE">💼 紐約證交所主力 (金融/能源)</option>
-                    <option value="ETF">📊 全美主力 ETF (標普/費半)</option>
-                </select>
 
+                <!-- 2. 板塊分類選擇 -->
+                <div>
+                    <label class="text-[11px] text-slate-400 font-bold block mb-1">🏛️ 市場板塊大池：</label>
+                    <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
+                        <option value="ALL">🌐 全市場精選大池 (全部標的)</option>
+                        <option value="SOX">⚡ 費城半導體 (SOX / 晶片軍火)</option>
+                        <option value="NASDAQ">💻 那斯達克 100 (科技核心主力)</option>
+                        <option value="DOW">🏛️ 道瓊工業 30 (傳統藍籌防守)</option>
+                        <option value="NYSE">💼 紐約證交所主力 (金融/能源/國防)</option>
+                        <option value="ETF">📊 全美主力 ETF (標普/公債/黃金)</option>
+                    </select>
+                </div>
+
+                <!-- 3. 全美股穿透查詢輸入框 -->
                 <div class="flex gap-2">
-                    <input id="customSymbol" type="text" placeholder="輸入代號 (例: PLTR, TSM)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-xs text-white uppercase focus:outline-none focus:border-[#38bdf8]">
-                    <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-xs transition">診斷</button>
+                    <input id="customSymbol" type="text" placeholder="全美股代號 (例: NVDA, IONQ, BABA)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-xs text-white uppercase focus:outline-none focus:border-[#38bdf8]">
+                    <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-xs transition">穿透診斷</button>
                 </div>
             </div>
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：圖表區域 -->
+        <!-- 中間：圖表區域 (K線/布林 + 成交量 + KD + MACD 四圖完全聯動) -->
         <main id="centerMain" class="flex-1 flex flex-col bg-[#0b0e14] p-3 overflow-y-auto">
-            <div class="flex flex-wrap justify-between items-center gap-2 mb-2">
+            <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
                 <div class="flex items-center space-x-2">
-                    <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">PLTR 帕蘭蒂爾科技</h1>
+                    <!-- 帶有交易所與正確中英文名稱的標題 -->
+                    <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">載入中...</h1>
                     <div class="flex bg-[#121824] border border-[#1e293b] rounded p-0.5 space-x-1 text-xs">
                         <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
                         <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white">週K</button>
@@ -163,7 +209,7 @@ HTML_CONTENT = """
                 </div>
             </div>
 
-            <!-- 均線開關膠囊列 (補齊 120MA 桃紅) -->
+            <!-- 均線與指標開關膠囊列 -->
             <div class="flex flex-wrap items-center gap-1.5 mb-2 text-xs">
                 <span class="text-slate-400 font-bold mr-1">📐 均線/指標:</span>
                 <button onclick="toggleIndicator('ma5')" id="pill_ma5" class="pill-active px-2 py-0.5 rounded border border-[#D97706] text-[#D97706] text-[11px] transition">5MA(橘)</button>
@@ -176,24 +222,27 @@ HTML_CONTENT = """
                 <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309] text-[#B45309] text-[11px] transition">20日頸線</button>
             </div>
 
-            <!-- 中文線圖工具列 -->
-            <div class="flex justify-between items-center bg-[#121824] border border-[#1e293b] px-2.5 py-1 rounded text-xs text-slate-300 mb-2">
-                <div class="flex items-center space-x-2">
-                    <span class="font-bold text-[#38bdf8]">🛠️ 中文工具:</span>
-                    <button onclick="resetChartZoom()" class="hover:text-white px-1.5 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]">🏠 還原比例</button>
-                    <button onclick="zoomIn()" class="hover:text-white px-1.5 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]">🔍 放大</button>
-                    <button onclick="zoomOut()" class="hover:text-white px-1.5 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]">🔎 縮小</button>
+            <!-- 完整的台股中文圖表工具列 (對齊台股 V9.8) -->
+            <div class="flex flex-wrap justify-between items-center bg-[#121824] border border-[#1e293b] px-2.5 py-1.5 rounded text-xs text-slate-300 mb-2 gap-2">
+                <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="font-bold text-[#38bdf8]">🛠️ 中文圖表工具:</span>
+                    <button onclick="resetChartZoom()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="還原初始畫面">🏠 還原初始</button>
+                    <button onclick="zoomIn()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="放大檢視">🔍 放大</button>
+                    <button onclick="zoomOut()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="縮小檢視">🔎 縮小</button>
+                    <button onclick="drawHorizontalRay()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="在收盤價位置畫水平支撐壓力線">📏 畫水平線</button>
+                    <button onclick="clearCustomDrawings()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b] text-red-400" title="清除所有自訂畫線">🧹 橡皮擦</button>
                 </div>
                 <div class="flex items-center space-x-1.5">
                     <label class="cursor-pointer text-[11px] flex items-center space-x-1">
                         <input type="checkbox" id="chartLockToggle" onchange="toggleChartLock()" class="rounded bg-[#0b0e14] border-[#2a374a]" checked>
-                        <span>✋ 鎖定頁面滑動</span>
+                        <span>✋ 鎖定頁面滑動 (避免誤觸)</span>
                     </label>
                 </div>
             </div>
 
-            <!-- 即時浮動 Legend 面板 -->
-            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-2.5 py-1 rounded mb-2 text-[11px] md:text-xs flex flex-wrap gap-x-2.5 gap-y-1 font-mono text-slate-300">
+            <!-- 即時浮動 Legend 面板 (含完整日期) -->
+            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-2.5 py-1.5 rounded mb-2 text-[11px] md:text-xs flex flex-wrap gap-x-2.5 gap-y-1 font-mono text-slate-300">
+                <span class="text-white font-bold">📅 日期: <strong id="legDate" class="text-sky-400">--</strong></span>
                 <span>開: <strong id="legOpen" class="text-white">--</strong></span>
                 <span>高: <strong id="legHigh" class="text-white">--</strong></span>
                 <span>低: <strong id="legLow" class="text-white">--</strong></span>
@@ -206,27 +255,27 @@ HTML_CONTENT = """
                 <span style="color: #B45309;">頸線: <strong id="legNeck">--</strong></span>
             </div>
 
-            <!-- 主圖 K線 (MA5/10/20/60/120/240 + 布林 + 頸線) -->
+            <!-- 1. 主圖：K線 ＋ 均線 ＋ 布林通道 ＋ 頸線 -->
             <div class="bg-[#121824] border border-[#1e293b] rounded-t-xl p-2 h-[260px] md:h-[300px] flex flex-col w-full">
                 <div id="mainChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 1: 成交量 ＋ 5日均量線 -->
+            <!-- 2. 副圖：成交量 ＋ 5日均量線 -->
             <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[85px] flex flex-col border-t border-[#1e293b]/50 w-full">
                 <div class="text-[10px] text-slate-400 font-bold mb-0.5">📊 成交量 ＆ 5日均量線 (Vol-MA5 橘褐點線)</div>
                 <div id="volChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 2: KD -->
+            <!-- 3. 副圖：KD (9, 3, 3) -->
             <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[85px] flex flex-col border-t border-[#1e293b]/50 w-full">
                 <div class="text-[10px] text-slate-400 font-bold mb-0.5 flex justify-between">
                     <span>⚡ KD(9,3)：<strong style="color: #D97706;">K(橘)</strong> / <strong style="color: #2563EB;">D(藍)</strong></span>
-                    <span class="text-slate-500 font-mono">80 / 20</span>
+                    <span class="text-slate-500 font-mono">超買 80 / 超賣 20</span>
                 </div>
                 <div id="kdChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 3: MACD -->
+            <!-- 4. 副圖：MACD (12, 26, 9) -->
             <div class="bg-[#121824] border-x border-b border-[#1e293b] rounded-b-xl p-2 h-[85px] flex flex-col border-t border-[#1e293b]/50 w-full">
                 <div class="text-[10px] text-slate-400 font-bold mb-0.5 flex justify-between">
                     <span>🌊 MACD(12,26,9)：<strong class="text-red-400">紅柱</strong> / <strong class="text-emerald-400">綠柱</strong> ＋ DIF/DEA</span>
@@ -239,14 +288,14 @@ HTML_CONTENT = """
         <!-- 右側：八大選擇權策略風控與 LINE 推播 -->
         <aside id="rightSidebar" class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 shrink-0">
             <h2 class="text-sm font-black text-white mb-2.5 flex items-center justify-between">
-                <span>📊 選擇權 8 大策略風控</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V9.8 旗艦完全體</span>
+                <span>📊 選擇權全市場策略風控</span>
+                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">真實到期日完全解鎖</span>
             </h2>
 
             <div class="space-y-2.5 text-xs">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <div>
-                        <label class="text-slate-400 block mb-1">到期日</label>
+                        <label class="text-slate-400 block mb-1">到期日 (全數列出)</label>
                         <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
                             <option value="">載入中...</option>
                         </select>
@@ -347,6 +396,7 @@ HTML_CONTENT = """
         let mainChart, volChart, kdChart, macdChart;
         let candleSeries;
         let ma5Series, ma10Series, ma20Series, ma60Series, ma120Series, ma240Series, bbUpSeries, bbLowSeries, neckSeries;
+        let customLineSeries = null;
         let volSeries, volMaSeries;
         let kSeries, dSeries;
         let macdHistSeries, macdDifSeries, macdDeaSeries;
@@ -357,11 +407,24 @@ HTML_CONTENT = """
         let currentInterval = "1d";
         let currentOptionData = null;
         let currentSector = "ALL";
+        let currentRadarMode = "LONG"; // LONG 多方突破 / SHORT 空方破底
         let universeData = [];
 
         let indState = {
             ma5: true, ma10: false, ma20: true, ma60: true, ma120: true, ma240: true, bb: false, neck: true
         };
+
+        function setRadarMode(mode) {
+            currentRadarMode = mode;
+            if (mode === 'LONG') {
+                document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-[#C0392B] text-white transition";
+                document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-[#1e293b] text-slate-400 hover:text-white transition";
+            } else {
+                document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-[#1E7E5A] text-white transition";
+                document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-[#1e293b] text-slate-400 hover:text-white transition";
+            }
+            loadScreenerList();
+        }
 
         async function fetchIndicesData() {
             try {
@@ -384,7 +447,7 @@ HTML_CONTENT = """
 
         async function loadScreenerList() {
             try {
-                const res = await fetch(`/api/screener?sector=${currentSector}`);
+                const res = await fetch(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}`);
                 const data = await res.json();
                 universeData = data.screener_list;
                 renderWatchlist();
@@ -409,7 +472,7 @@ HTML_CONTENT = """
                             <span class="text-[10px] text-emerald-400 bg-[#121824] px-1.5 py-0.5 rounded border border-emerald-500/20">${item.score}</span>
                         </div>
                         <div class="text-[11px] text-slate-400 flex justify-between mt-0.5">
-                            <span>${item.name}</span>
+                            <span class="truncate max-w-[120px]">${item.name}</span>
                             <span>距頸線 ${item.dist_neck_pct}%</span>
                         </div>
                     </div>
@@ -483,6 +546,28 @@ HTML_CONTENT = """
             }
         }
 
+        function drawHorizontalRay() {
+            if (!customLineSeries) {
+                customLineSeries = mainChart.addLineSeries({
+                    color: '#facc15',
+                    lineWidth: 2,
+                    lineStyle: 2,
+                    title: '自訂水平線'
+                });
+            }
+            if (window._cachedCandles && window._cachedCandles.length > 0) {
+                const lineData = window._cachedCandles.map(c => ({ time: c.time, value: currentSpot }));
+                customLineSeries.setData(lineData);
+            }
+        }
+
+        function clearCustomDrawings() {
+            if (customLineSeries) {
+                mainChart.removeSeries(customLineSeries);
+                customLineSeries = null;
+            }
+        }
+
         function initCharts() {
             const mainEl = document.getElementById('mainChartContainer');
             const volEl = document.getElementById('volChartContainer');
@@ -540,7 +625,7 @@ HTML_CONTENT = """
             macdDifSeries = macdChart.addLineSeries({ color: '#D97706', lineWidth: 1.5, title: 'DIF' });
             macdDeaSeries = macdChart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, title: 'DEA' });
 
-            // 4圖完全同步
+            // 4 圖深度時間軸同步
             const charts = [mainChart, volChart, kdChart, macdChart];
             charts.forEach(srcChart => {
                 srcChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
@@ -555,7 +640,7 @@ HTML_CONTENT = """
                 });
             });
 
-            // 十字線數值聯動
+            // 十字線數值聯動（含日期）
             mainChart.subscribeCrosshairMove(param => {
                 if (!param.time || !param.seriesData.get(candleSeries)) return;
                 const c = param.seriesData.get(candleSeries);
@@ -566,6 +651,7 @@ HTML_CONTENT = """
                 const m240 = param.seriesData.get(ma240Series);
                 const neck = param.seriesData.get(neckSeries);
                 
+                document.getElementById('legDate').innerText = param.time;
                 document.getElementById('legOpen').innerText = `$${c.open.toFixed(2)}`;
                 document.getElementById('legHigh').innerText = `$${c.high.toFixed(2)}`;
                 document.getElementById('legLow').innerText = `$${c.low.toFixed(2)}`;
@@ -597,6 +683,7 @@ HTML_CONTENT = """
                 const res = await fetch(`/api/quote/${symbol}?interval=${currentInterval}`);
                 const data = await res.json();
                 if(data.candles && data.candles.length > 0) {
+                    window._cachedCandles = data.candles;
                     currentSpot = data.spot;
                     currentMA20 = data.ma20_val;
                     currentMA240 = data.ma240_val;
@@ -628,7 +715,8 @@ HTML_CONTENT = """
                     macdDifSeries.setData(data.macd_dif);
                     macdDeaSeries.setData(data.macd_dea);
 
-                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name}`;
+                    // 標題顯示：代號 + 完整中英文公司名 + [交易所]
+                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name} [${data.exchange}]`;
                     
                     const pSign = data.chg >= 0 ? '▲' : '▼';
                     const pColor = data.chg >= 0 ? '#C0392B' : '#1E7E5A';
@@ -642,7 +730,7 @@ HTML_CONTENT = """
                     loadOptionChain(symbol);
                 }
             } catch(e) {
-                alert('載入美股數據失敗');
+                alert('載入美股數據失敗，請確認代號是否正確');
             }
         }
 
@@ -653,6 +741,8 @@ HTML_CONTENT = """
                 currentOptionData = data.chain;
                 const expSelect = document.getElementById('expDateSelect');
                 expSelect.innerHTML = '';
+                
+                // 完全解鎖：市場該有多少到期日就全部加進去
                 data.expirations.forEach(exp => {
                     const opt = document.createElement('option');
                     opt.value = exp;
@@ -668,7 +758,6 @@ HTML_CONTENT = """
             const strat = document.getElementById('strategySelect').value;
             if(!currentOptionData || !currentOptionData[exp]) return;
 
-            // 依策略載入 Calls 或 Puts
             const isCallBased = ['cc', 'long_call', 'bull_call'].includes(strat);
             const strikes = isCallBased ? currentOptionData[exp].calls : currentOptionData[exp].puts;
             const strikeSelect = document.getElementById('strikeSelect');
@@ -719,7 +808,6 @@ HTML_CONTENT = """
             drawPayoffDiagram(stk.strike, (stk.bid + stk.ask) / 2, strat);
         }
 
-        // 8 大選擇權策略 Payoff 損益分佈圖
         function drawPayoffDiagram(strike, premium, strategy) {
             const canvas = document.getElementById('payoffCanvas');
             const ctx = canvas.getContext('2d');
@@ -873,10 +961,11 @@ def get_indices():
     return results
 
 @app.get("/api/screener")
-def run_v98_screener(sector: str = "ALL"):
+def run_v98_screener(sector: str = "ALL", mode: str = "LONG"):
     target_pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
     results = []
-    for item in target_pool[:25]:
+    
+    for item in target_pool[:30]:
         sym = item["symbol"]
         try:
             t = yf.Ticker(sym)
@@ -888,16 +977,27 @@ def run_v98_screener(sector: str = "ALL"):
             v = float(df['Volume'].iloc[-1])
             v_ma5 = float(df['Volume'].shift(1).rolling(5).mean().iloc[-1])
             ma20 = float(df['Close'].rolling(20).mean().iloc[-1])
-            neckline = float(df['High'].iloc[-21:-1].max())
-            dist_neck = round(((c / neckline) - 1.0) * 100.0, 1)
-            v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
             
-            if c > neckline and c > o and c > ma20 and v_ratio >= 1.2:
-                score = "🔥 暴量突破"
-            elif c > ma20 and abs(dist_neck) <= 5.0:
-                score = "🛡️ 頸線守候"
+            high_neck = float(df['High'].iloc[-21:-1].max())
+            low_neck = float(df['Low'].iloc[-21:-1].min())
+            v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
+
+            if mode == "LONG":
+                dist_neck = round(((c / high_neck) - 1.0) * 100.0, 1)
+                if c > high_neck and c > o and c > ma20 and v_ratio >= 1.2:
+                    score = "🔥 暴量突破"
+                elif c > ma20 and abs(dist_neck) <= 5.0:
+                    score = "🛡️ 頸線守候"
+                else:
+                    score = "💎 偏多整理"
             else:
-                score = "💎 偏多整理"
+                dist_neck = round(((c / low_neck) - 1.0) * 100.0, 1)
+                if c < low_neck and c < o and c < ma20 and v_ratio >= 1.2:
+                    score = "⚡ 破底轉弱"
+                elif c < ma20:
+                    score = "⚠️ 空頭排列"
+                else:
+                    score = "📉 偏空震盪"
                 
             results.append({
                 "symbol": sym, "name": item["name"], "sector": item["sector"],
@@ -1004,15 +1104,31 @@ def get_quote_data(symbol: str, interval: str = "1d"):
         macd_dif_data.append({"time": t_str, "value": float(round(row["DIF"], 2))})
         macd_dea_data.append({"time": t_str, "value": float(round(row["DEA"], 2))})
 
-    name = symbol
+    # 動態穿透取得標準中英文名與交易所
+    sym_clean = symbol.strip().upper()
+    name_str = sym_clean
+    exchange_str = "US"
+    
+    # 先從本機對應表找常用中文
     for it in MARKET_UNIVERSE:
-        if it["symbol"] == symbol.upper():
-            name = it["name"]
+        if it["symbol"] == sym_clean:
+            name_str = it["name"]
+            exchange_str = it["market"]
             break
 
+    # 若未在常規表內，向 yfinance 抓取官方中英文名與交易所
+    if name_str == sym_clean:
+        try:
+            info = ticker.info
+            name_str = info.get('shortName') or info.get('longName') or sym_clean
+            exchange_str = info.get('exchange', 'US')
+        except:
+            pass
+
     return {
-        "symbol": symbol.upper(),
-        "name": name,
+        "symbol": sym_clean,
+        "name": name_str,
+        "exchange": exchange_str,
         "spot": spot,
         "chg": chg,
         "pct": pct,
@@ -1046,7 +1162,8 @@ def get_options(symbol: str):
         expirations = ticker.options
         if expirations and len(expirations) > 0:
             chain_data = {}
-            for exp in expirations[:4]:
+            # 完全解除到期日限制，有多少到期日全數帶入
+            for exp in expirations:
                 opt_chain = ticker.option_chain(exp)
                 puts, calls = [], []
                 for _, r in opt_chain.puts.iterrows():
@@ -1068,13 +1185,14 @@ def get_options(symbol: str):
     except Exception:
         pass
 
+    # 防呆 Fallback
     df = ticker.history(period="1d")
     spot = float(df['Close'].iloc[-1]) if not df.empty else 186.0
-    fallback_exp = ["2026-11-20", "2026-12-18", "2027-01-15"]
+    fallback_exp = ["2026-11-20", "2026-12-18", "2027-01-15", "2027-03-19", "2027-06-18"]
     fallback_chain = {}
     for exp in fallback_exp:
         puts, calls = [], []
-        for i in range(-5, 6):
+        for i in range(-6, 7):
             stk = round(spot + i * 5, 2)
             puts.append({"strike": stk, "bid": 2.5, "ask": 2.8, "impliedVolatility": 0.35})
             calls.append({"strike": stk, "bid": 2.6, "ask": 2.9, "impliedVolatility": 0.35})
@@ -1103,7 +1221,7 @@ def line_push(payload: dict):
     dist_neck = round(((spot / neckline) - 1.0) * 100.0, 1)
 
     text_report = (
-        f"📈【美股多空雷達 V9.8｜機構突破戰報】\n"
+        f"📈【美股多空雷達 V9.8｜機構戰報】\n"
         f"🕒 資料時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"🌡️ 標的：{sym} 現價 ${spot:.2f} ({p_sign}{abs(pct)}%)\n"
         f"📏 距20日頸線 (${neckline:.2f})：{dist_neck:+.1f}%\n"
