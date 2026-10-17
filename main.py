@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import norm
 import requests
 
-app = FastAPI(title="US Professional Cloud War Room - Ultimate V120.0")
+app = FastAPI(title="US Professional Cloud War Room - Ultimate V120.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,7 +57,7 @@ HTML_CONTENT = """
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>華爾街美股雲端專業旗艦戰情室 ｜ V120.0 交易所與期權防呆版</title>
+    <title>華爾街美股雲端專業旗艦戰情室 ｜ V120.1 交易所獨立版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -65,8 +65,8 @@ HTML_CONTENT = """
     <!-- 頂部專業導航列 -->
     <header class="bg-[#121824] border-b border-[#1e293b] px-6 py-3 flex justify-between items-center shadow-lg">
         <div class="flex items-center space-x-3">
-            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V120.0</span>
-            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">各大交易所過濾 + 期權防呆完全體</span>
+            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V120.1</span>
+            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">各大交易所獨立過濾 + 期權防呆</span>
         </div>
         <div class="flex items-center space-x-4 text-xs">
             <div class="flex bg-[#1e293b] border border-[#2a374a] rounded-lg p-0.5 space-x-1">
@@ -86,21 +86,26 @@ HTML_CONTENT = """
         <aside class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col">
             <div class="p-4 border-b border-[#1e293b] space-y-3">
                 <div class="flex justify-between items-center">
-                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📡 交易所篩選與掃描</h2>
-                    <button onclick="runProScreener()" class="text-[10px] bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-2.5 py-1 rounded transition shadow">執行全面掃描</button>
+                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📡 美股交易所與過濾</h2>
+                    <button onclick="runProScreener()" class="text-[10px] bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-2.5 py-1 rounded transition shadow">全面掃描</button>
                 </div>
-                <!-- 交易所選擇下拉選單 -->
-                <div class="flex gap-2">
-                    <select id="exchangeSelect" class="bg-[#0b0e14] border border-[#2a374a] rounded px-2 py-1 text-xs text-[#38bdf8] font-bold focus:outline-none">
-                        <option value="ALL">🌐 全部交易所</option>
-                        <option value="NASDAQ">💻 NASDAQ 科技</option>
-                        <option value="NYSE">🏛️ NYSE 紐交所</option>
-                        <option value="ETF">📊 主力 ETF</option>
-                    </select>
-                    <button onclick="filterByExchange()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white text-xs px-3 py-1 rounded font-bold border border-[#38bdf8]/30">過濾</button>
+                
+                <!-- 💡 明確獨立的交易所過濾區塊 -->
+                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-2">
+                    <label class="text-[11px] text-[#38bdf8] font-bold block">🏛️ 選擇目標交易所分類：</label>
+                    <div class="flex gap-2">
+                        <select id="exchangeSelect" class="flex-1 bg-[#121824] border border-[#2a374a] rounded px-2 py-1.5 text-xs text-white font-bold focus:outline-none focus:border-[#38bdf8]">
+                            <option value="ALL">🌐 全部交易所 (All)</option>
+                            <option value="NASDAQ">💻 NASDAQ (科技為主)</option>
+                            <option value="NYSE">🏛️ NYSE (紐交所傳統)</option>
+                            <option value="ETF">📊 主力 ETF 標的</option>
+                        </select>
+                        <button onclick="filterByExchange()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 text-xs px-3 py-1.5 rounded font-black transition">切換</button>
+                    </div>
                 </div>
+
                 <div class="flex gap-2">
-                    <input id="customSymbol" type="text" placeholder="輸入美股代號 (例: PLTR, AAPL)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-sm text-white uppercase focus:outline-none focus:border-[#38bdf8]">
+                    <input id="customSymbol" type="text" placeholder="輸入代號 (例: PLTR, AAPL)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-sm text-white uppercase focus:outline-none focus:border-[#38bdf8]">
                     <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-sm transition">載入</button>
                 </div>
             </div>
@@ -154,7 +159,7 @@ HTML_CONTENT = """
         <aside class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 overflow-y-auto">
             <h2 class="text-sm font-black text-white mb-3 flex items-center justify-between">
                 <span>📊 期權風控與雲端自動推播</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V120.0 完全體</span>
+                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V120.1 完全體</span>
             </h2>
 
             <div class="space-y-3 text-xs">
@@ -286,7 +291,7 @@ HTML_CONTENT = """
         let currentInterval = "1d";
         let currentOptionData = null;
 
-        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v120')) || [
+        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v120_1')) || [
             { symbol: "PLTR", name: "帕蘭蒂爾", score: "🔥 強勢突破", ex: "NYSE" },
             { symbol: "NVDA", name: "輝達", score: "🔥 強勢突破", ex: "NASDAQ" },
             { symbol: "TSLA", name: "特斯拉", score: "💎 跌深反彈", ex: "NASDAQ" },
@@ -342,7 +347,7 @@ HTML_CONTENT = """
                 div.innerHTML = `
                     <div onclick="fetchStockData('${item.symbol}')" class="flex-1 cursor-pointer">
                         <div class="font-bold text-white group-hover:text-[#38bdf8] text-sm flex justify-between">
-                            <span>${item.symbol} (${item.ex})</span>
+                            <span>${item.symbol} <span class="text-[10px] text-amber-400">[${item.ex}]</span></span>
                             <span class="text-[10px] text-emerald-400 bg-[#121824] px-1.5 py-0.5 rounded">${item.score}</span>
                         </div>
                         <div class="text-[11px] text-slate-400">${item.name}</div>
@@ -354,7 +359,7 @@ HTML_CONTENT = """
         }
 
         function saveWatchlist() {
-            localStorage.setItem('my_watchlist_v120', JSON.stringify(watchlist));
+            localStorage.setItem('my_watchlist_v120_1', JSON.stringify(watchlist));
         }
 
         function renderWatchlist() {
@@ -379,14 +384,14 @@ HTML_CONTENT = """
         }
 
         async function runProScreener() {
-            document.getElementById('chartTitle').innerText = "📡 各大交易所大視野掃描中...";
+            document.getElementById('chartTitle').innerText = "📡 交易所大視野全面掃描中...";
             try {
                 const res = await fetch('/api/screener');
                 const data = await res.json();
                 if(data.screener_list && data.screener_list.length > 0) {
                     watchlist = data.screener_list;
                     renderWatchlist();
-                    alert(`[交易所掃描完成] 已過濾出 ${watchlist.length} 檔各大交易所強勢標的！`);
+                    alert(`[全面掃描完成] 已過濾出各大交易所強勢標的！`);
                     fetchStockData(watchlist[0].symbol);
                 }
             } catch(e) {
@@ -648,7 +653,6 @@ HTML_CONTENT = """
                 });
                 const result = await res.json();
                 
-                // 顯示真實 LINE 推播預覽 Modal
                 document.getElementById('linePreviewText').innerText = text;
                 document.getElementById('lineModal').classList.remove('hidden');
             } catch(e) {
@@ -793,7 +797,7 @@ def get_option_chain(symbol: str):
         if not expirations or len(expirations) == 0:
             raise Exception("No options")
         chain_data = {}
-        for exp in expirations[:4]:  # 取前4個最近到期日
+        for exp in expirations[:4]:
             opt_chain = ticker.option_chain(exp)
             puts = []
             calls = []
@@ -814,7 +818,6 @@ def get_option_chain(symbol: str):
             chain_data[exp] = {"puts": puts, "calls": calls}
         return {"expirations": list(chain_data.keys()), "chain": chain_data}
     except Exception as e:
-        # 💡 期權防呆備份機制：若該標的無期權或休市期間API抓取失敗，自動生成合理的期權鏈
         spot = 186.03
         try:
             t = yf.Ticker(symbol.strip().upper())
