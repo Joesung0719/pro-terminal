@@ -9,7 +9,7 @@ import requests
 import datetime
 import os
 
-app = FastAPI(title="US Professional Radar War Room - V9.8 Flagship Fully Integrated")
+app = FastAPI(title="US Professional Radar War Room - V9.8 Plotly Edition")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +42,6 @@ def calculate_greeks(S, K, T, r, sigma, option_type="put"):
         "vega": float(round(vega, 4))
     }
 
-# 核心板塊代表池（可隨時擴充）
 MARKET_UNIVERSE = [
     # 費半 SOX
     {"symbol": "NVDA", "name": "輝達", "sector": "SOX", "market": "NASDAQ"},
@@ -104,9 +103,10 @@ HTML_CONTENT = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>美股多空雷達戰情室 V9.8 旗艦完全體</title>
+    <title>美股多空雷達戰情室 V9.8 ｜ Plotly 旗艦完全體</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <!-- 引入台股同款 Plotly 專業繪圖庫 -->
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
         @media (max-width: 1024px) {
             #mainLayout { flex-direction: column !important; height: auto !important; overflow-y: auto !important; }
@@ -128,7 +128,7 @@ HTML_CONTENT = """
         <div class="flex justify-between items-center">
             <div class="flex items-center space-x-2">
                 <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8</span>
-                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">台股標準完全體</span>
+                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">Plotly 專業畫線完全體</span>
             </div>
             <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold shrink-0">🔄 刷新溫度計</button>
         </div>
@@ -154,10 +154,10 @@ HTML_CONTENT = """
 
     <!-- 主體區域 -->
     <div id="mainLayout" class="flex flex-1 overflow-hidden">
-        <!-- 左側：多空方向切換 ＋ 板塊分類 ＋ 股票清單 -->
+        <!-- 左側：多空實質篩選 ＋ 板塊分類 ＋ 股票清單 -->
         <aside id="leftSidebar" class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col shrink-0">
             <div class="p-3 border-b border-[#1e293b] space-y-2">
-                <!-- 1. 多空方向切換 (完全對齊台股 V9.8) -->
+                <!-- 1. 多空方向切換 -->
                 <div>
                     <label class="text-[11px] text-slate-400 font-bold block mb-1">🎯 選股多空方向：</label>
                     <div class="grid grid-cols-2 gap-1.5">
@@ -188,11 +188,10 @@ HTML_CONTENT = """
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：圖表區域 (K線/布林 + 成交量 + KD + MACD 四圖完全聯動) -->
+        <!-- 中間：Plotly 原生多層圖表（支援畫趨勢線、方框與四圖完全同步） -->
         <main id="centerMain" class="flex-1 flex flex-col bg-[#0b0e14] p-3 overflow-y-auto">
             <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
                 <div class="flex items-center space-x-2">
-                    <!-- 帶有交易所與正確中英文名稱的標題 -->
                     <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">載入中...</h1>
                     <div class="flex bg-[#121824] border border-[#1e293b] rounded p-0.5 space-x-1 text-xs">
                         <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
@@ -222,67 +221,8 @@ HTML_CONTENT = """
                 <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309] text-[#B45309] text-[11px] transition">20日頸線</button>
             </div>
 
-            <!-- 完整的台股中文圖表工具列 (對齊台股 V9.8) -->
-            <div class="flex flex-wrap justify-between items-center bg-[#121824] border border-[#1e293b] px-2.5 py-1.5 rounded text-xs text-slate-300 mb-2 gap-2">
-                <div class="flex flex-wrap items-center gap-1.5">
-                    <span class="font-bold text-[#38bdf8]">🛠️ 中文圖表工具:</span>
-                    <button onclick="resetChartZoom()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="還原初始畫面">🏠 還原初始</button>
-                    <button onclick="zoomIn()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="放大檢視">🔍 放大</button>
-                    <button onclick="zoomOut()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="縮小檢視">🔎 縮小</button>
-                    <button onclick="drawHorizontalRay()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b]" title="在收盤價位置畫水平支撐壓力線">📏 畫水平線</button>
-                    <button onclick="clearCustomDrawings()" class="hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-[#1e293b] text-red-400" title="清除所有自訂畫線">🧹 橡皮擦</button>
-                </div>
-                <div class="flex items-center space-x-1.5">
-                    <label class="cursor-pointer text-[11px] flex items-center space-x-1">
-                        <input type="checkbox" id="chartLockToggle" onchange="toggleChartLock()" class="rounded bg-[#0b0e14] border-[#2a374a]" checked>
-                        <span>✋ 鎖定頁面滑動 (避免誤觸)</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- 即時浮動 Legend 面板 (含完整日期) -->
-            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-2.5 py-1.5 rounded mb-2 text-[11px] md:text-xs flex flex-wrap gap-x-2.5 gap-y-1 font-mono text-slate-300">
-                <span class="text-white font-bold">📅 日期: <strong id="legDate" class="text-sky-400">--</strong></span>
-                <span>開: <strong id="legOpen" class="text-white">--</strong></span>
-                <span>高: <strong id="legHigh" class="text-white">--</strong></span>
-                <span>低: <strong id="legLow" class="text-white">--</strong></span>
-                <span>收: <strong id="legClose" class="text-emerald-400">--</strong></span>
-                <span style="color: #D97706;">5MA: <strong id="legMA5">--</strong></span>
-                <span style="color: #7C3AED;">20MA: <strong id="legMA20">--</strong></span>
-                <span style="color: #0D9488;">60MA: <strong id="legMA60">--</strong></span>
-                <span style="color: #DB2777;">120MA: <strong id="legMA120">--</strong></span>
-                <span style="color: #64748b;">240MA: <strong id="legMA240">--</strong></span>
-                <span style="color: #B45309;">頸線: <strong id="legNeck">--</strong></span>
-            </div>
-
-            <!-- 1. 主圖：K線 ＋ 均線 ＋ 布林通道 ＋ 頸線 -->
-            <div class="bg-[#121824] border border-[#1e293b] rounded-t-xl p-2 h-[260px] md:h-[300px] flex flex-col w-full">
-                <div id="mainChartContainer" class="w-full flex-1"></div>
-            </div>
-
-            <!-- 2. 副圖：成交量 ＋ 5日均量線 -->
-            <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[85px] flex flex-col border-t border-[#1e293b]/50 w-full">
-                <div class="text-[10px] text-slate-400 font-bold mb-0.5">📊 成交量 ＆ 5日均量線 (Vol-MA5 橘褐點線)</div>
-                <div id="volChartContainer" class="w-full flex-1"></div>
-            </div>
-
-            <!-- 3. 副圖：KD (9, 3, 3) -->
-            <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[85px] flex flex-col border-t border-[#1e293b]/50 w-full">
-                <div class="text-[10px] text-slate-400 font-bold mb-0.5 flex justify-between">
-                    <span>⚡ KD(9,3)：<strong style="color: #D97706;">K(橘)</strong> / <strong style="color: #2563EB;">D(藍)</strong></span>
-                    <span class="text-slate-500 font-mono">超買 80 / 超賣 20</span>
-                </div>
-                <div id="kdChartContainer" class="w-full flex-1"></div>
-            </div>
-
-            <!-- 4. 副圖：MACD (12, 26, 9) -->
-            <div class="bg-[#121824] border-x border-b border-[#1e293b] rounded-b-xl p-2 h-[85px] flex flex-col border-t border-[#1e293b]/50 w-full">
-                <div class="text-[10px] text-slate-400 font-bold mb-0.5 flex justify-between">
-                    <span>🌊 MACD(12,26,9)：<strong class="text-red-400">紅柱</strong> / <strong class="text-emerald-400">綠柱</strong> ＋ DIF/DEA</span>
-                    <span class="text-slate-500 font-mono">零軸 (Zero Line)</span>
-                </div>
-                <div id="macdChartContainer" class="w-full flex-1"></div>
-            </div>
+            <!-- Plotly 圖表主容器（原生具備 Modebar 工具列與 4 層圖表完全聯動） -->
+            <div id="plotlyChartContainer" class="bg-[#121824] border border-[#1e293b] rounded-xl p-2 w-full h-[620px] md:h-[680px]"></div>
         </main>
 
         <!-- 右側：八大選擇權策略風控與 LINE 推播 -->
@@ -295,7 +235,7 @@ HTML_CONTENT = """
             <div class="space-y-2.5 text-xs">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <div>
-                        <label class="text-slate-400 block mb-1">到期日 (全數列出)</label>
+                        <label class="text-slate-400 block mb-1">到期日 (市場全部到期日)</label>
                         <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
                             <option value="">載入中...</option>
                         </select>
@@ -393,22 +333,14 @@ HTML_CONTENT = """
     </div>
 
     <script>
-        let mainChart, volChart, kdChart, macdChart;
-        let candleSeries;
-        let ma5Series, ma10Series, ma20Series, ma60Series, ma120Series, ma240Series, bbUpSeries, bbLowSeries, neckSeries;
-        let customLineSeries = null;
-        let volSeries, volMaSeries;
-        let kSeries, dSeries;
-        let macdHistSeries, macdDifSeries, macdDeaSeries;
-
-        let isSyncing = false;
         let currentSpot = 0, currentMA20 = 0, currentMA240 = 0, currentNeckline = 0;
         let currentSymbol = "PLTR";
         let currentInterval = "1d";
         let currentOptionData = null;
         let currentSector = "ALL";
-        let currentRadarMode = "LONG"; // LONG 多方突破 / SHORT 空方破底
+        let currentRadarMode = "LONG";
         let universeData = [];
+        let currentRawData = null;
 
         let indState = {
             ma5: true, ma10: false, ma20: true, ma60: true, ma120: true, ma240: true, bb: false, neck: true
@@ -462,6 +394,10 @@ HTML_CONTENT = """
         function renderWatchlist() {
             const container = document.getElementById('watchlist');
             container.innerHTML = '';
+            if (universeData.length === 0) {
+                container.innerHTML = `<div class="p-4 text-center text-xs text-slate-500">目前時段無符合 ${currentRadarMode === 'LONG' ? '多方突破' : '空方破底'} 之標的</div>`;
+                return;
+            }
             universeData.forEach((item, idx) => {
                 const div = document.createElement('div');
                 div.className = "flex items-center justify-between px-3 py-2 rounded-lg bg-[#0b0e14] hover:bg-[#1a2234] transition group border border-[#1e293b]";
@@ -497,183 +433,125 @@ HTML_CONTENT = """
             } else {
                 btn.className = "pill-inactive px-2 py-0.5 rounded border text-[11px] transition";
             }
+            if (currentRawData) renderPlotlyChart(currentRawData);
+        }
 
-            if (key === 'ma5' && ma5Series) ma5Series.applyOptions({ visible: indState.ma5 });
-            if (key === 'ma10' && ma10Series) ma10Series.applyOptions({ visible: indState.ma10 });
-            if (key === 'ma20' && ma20Series) ma20Series.applyOptions({ visible: indState.ma20 });
-            if (key === 'ma60' && ma60Series) ma60Series.applyOptions({ visible: indState.ma60 });
-            if (key === 'ma120' && ma120Series) ma120Series.applyOptions({ visible: indState.ma120 });
-            if (key === 'ma240' && ma240Series) ma240Series.applyOptions({ visible: indState.ma240 });
-            if (key === 'neck' && neckSeries) neckSeries.applyOptions({ visible: indState.neck });
-            if (key === 'bb' && bbUpSeries && bbLowSeries) {
-                bbUpSeries.applyOptions({ visible: indState.bb });
-                bbLowSeries.applyOptions({ visible: indState.bb });
+        // ⭐ 台股同款 Plotly 專業多層圖表渲染函數
+        function renderPlotlyChart(data) {
+            currentRawData = data;
+            const dates = data.dates;
+            const traces = [];
+
+            // 1. 主圖：K線 (台股紅漲綠跌)
+            traces.push({
+                x: dates,
+                open: data.opens, high: data.highs, low: data.lows, close: data.closes,
+                type: 'candlestick',
+                name: 'K線',
+                increasing: { line: { color: '#C0392B' }, fillcolor: '#C0392B' },
+                decreasing: { line: { color: '#1E7E5A' }, fillcolor: '#1E7E5A' },
+                xaxis: 'x', yaxis: 'y'
+            });
+
+            // 均線系統
+            if (indState.ma5) traces.push({ x: dates, y: data.ma5, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.5 }, name: '5MA', xaxis: 'x', yaxis: 'y' });
+            if (indState.ma10) traces.push({ x: dates, y: data.ma10, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.5 }, name: '10MA', xaxis: 'x', yaxis: 'y' });
+            if (indState.ma20) traces.push({ x: dates, y: data.ma20, type: 'scatter', mode: 'lines', line: { color: '#7C3AED', width: 2 }, name: '20MA(月線)', xaxis: 'x', yaxis: 'y' });
+            if (indState.ma60) traces.push({ x: dates, y: data.ma60, type: 'scatter', mode: 'lines', line: { color: '#0D9488', width: 1.5 }, name: '60MA(季線)', xaxis: 'x', yaxis: 'y' });
+            if (indState.ma120) traces.push({ x: dates, y: data.ma120, type: 'scatter', mode: 'lines', line: { color: '#DB2777', width: 1.5 }, name: '120MA(半年)', xaxis: 'x', yaxis: 'y' });
+            if (indState.ma240) traces.push({ x: dates, y: data.ma240, type: 'scatter', mode: 'lines', line: { color: '#64748b', width: 1.5, dash: 'dash' }, name: '240MA(年線)', xaxis: 'x', yaxis: 'y' });
+
+            // 布林通道
+            if (indState.bb) {
+                traces.push({ x: dates, y: data.bb_up, type: 'scatter', mode: 'lines', line: { color: 'rgba(148, 163, 184, 0.55)', width: 1, dash: 'dot' }, name: '布林上軌', xaxis: 'x', yaxis: 'y' });
+                traces.push({ x: dates, y: data.bb_low, type: 'scatter', mode: 'lines', line: { color: 'rgba(148, 163, 184, 0.55)', width: 1, dash: 'dot' }, name: '布林下軌', xaxis: 'x', yaxis: 'y' });
             }
-        }
 
-        function toggleChartLock() {
-            const isLocked = document.getElementById('chartLockToggle').checked;
-            const scrollZoomVal = !isLocked;
-            mainChart.applyOptions({ handleScroll: scrollZoomVal, handleScale: scrollZoomVal });
-            volChart.applyOptions({ handleScroll: scrollZoomVal, handleScale: scrollZoomVal });
-            kdChart.applyOptions({ handleScroll: scrollZoomVal, handleScale: scrollZoomVal });
-            macdChart.applyOptions({ handleScroll: scrollZoomVal, handleScale: scrollZoomVal });
-        }
-
-        function resetChartZoom() {
-            mainChart.timeScale().resetTimeScale();
-        }
-
-        function zoomIn() {
-            const logicalRange = mainChart.timeScale().getVisibleLogicalRange();
-            if (logicalRange) {
-                const diff = (logicalRange.to - logicalRange.from) * 0.2;
-                mainChart.timeScale().setVisibleLogicalRange({
-                    from: logicalRange.from + diff,
-                    to: logicalRange.to - diff
-                });
+            // 頸線
+            if (indState.neck) {
+                traces.push({ x: dates, y: Array(dates.length).fill(data.neckline), type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 2, dash: 'dash' }, name: '20日頸線', xaxis: 'x', yaxis: 'y' });
             }
-        }
 
-        function zoomOut() {
-            const logicalRange = mainChart.timeScale().getVisibleLogicalRange();
-            if (logicalRange) {
-                const diff = (logicalRange.to - logicalRange.from) * 0.25;
-                mainChart.timeScale().setVisibleLogicalRange({
-                    from: logicalRange.from - diff,
-                    to: logicalRange.to + diff
-                });
-            }
-        }
+            // 2. 副圖 1：成交量 ＋ 5日均量線
+            const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(192, 57, 43, 0.7)' : 'rgba(30, 126, 90, 0.7)');
+            traces.push({
+                x: dates, y: data.volumes, type: 'bar', marker: { color: volColors }, name: '成交量', xaxis: 'x', yaxis: 'y2'
+            });
+            traces.push({
+                x: dates, y: data.vol_ma5, type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 1.5, dash: 'dot' }, name: '5日均量', xaxis: 'x', yaxis: 'y2'
+            });
 
-        function drawHorizontalRay() {
-            if (!customLineSeries) {
-                customLineSeries = mainChart.addLineSeries({
-                    color: '#facc15',
-                    lineWidth: 2,
-                    lineStyle: 2,
-                    title: '自訂水平線'
-                });
-            }
-            if (window._cachedCandles && window._cachedCandles.length > 0) {
-                const lineData = window._cachedCandles.map(c => ({ time: c.time, value: currentSpot }));
-                customLineSeries.setData(lineData);
-            }
-        }
+            // 3. 副圖 2：KD 指標
+            traces.push({ x: dates, y: data.k, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.8 }, name: 'K(9)', xaxis: 'x', yaxis: 'y3' });
+            traces.push({ x: dates, y: data.d, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.8 }, name: 'D(9)', xaxis: 'x', yaxis: 'y3' });
 
-        function clearCustomDrawings() {
-            if (customLineSeries) {
-                mainChart.removeSeries(customLineSeries);
-                customLineSeries = null;
-            }
-        }
+            // 4. 副圖 3：MACD 柱狀 ＋ 雙線
+            const macdColors = data.macd_hist.map(v => v >= 0 ? '#C0392B' : '#1E7E5A');
+            traces.push({ x: dates, y: data.macd_hist, type: 'bar', marker: { color: macdColors }, name: 'MACD柱', xaxis: 'x', yaxis: 'y4' });
+            traces.push({ x: dates, y: data.macd_dif, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.5 }, name: 'DIF', xaxis: 'x', yaxis: 'y4' });
+            traces.push({ x: dates, y: data.macd_dea, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.5 }, name: 'DEA', xaxis: 'x', yaxis: 'y4' });
 
-        function initCharts() {
-            const mainEl = document.getElementById('mainChartContainer');
-            const volEl = document.getElementById('volChartContainer');
-            const kdEl = document.getElementById('kdChartContainer');
-            const macdEl = document.getElementById('macdChartContainer');
-
-            const isMobile = window.innerWidth <= 1024;
-            const mainHeight = isMobile ? 260 : 300;
-
-            const chartBaseOpts = {
-                layout: { background: { type: 'solid', color: '#121824' }, textColor: '#94a3b8' },
-                grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
-                timeScale: { borderColor: '#1e293b', visible: false },
-                rightPriceScale: { borderColor: '#1e293b' },
-                handleScroll: false,
-                handleScale: false
+            const layout = {
+                paper_bgcolor: '#121824',
+                plot_bgcolor: '#0b0e14',
+                font: { color: '#94a3b8', family: 'sans-serif', size: 11 },
+                margin: { l: 45, r: 45, t: 15, b: 25 },
+                showlegend: false,
+                xaxis: {
+                    type: 'category',
+                    rangeslider: { visible: false },
+                    gridcolor: '#1e293b',
+                    nticks: 8,
+                    tickangle: 0
+                },
+                // 4層圖表網格比例劃分
+                yaxis: { domain: [0.52, 1.0], gridcolor: '#1e293b', side: 'right' },
+                yaxis2: { domain: [0.36, 0.49], gridcolor: '#1e293b', side: 'right', title: '成交量' },
+                yaxis3: { domain: [0.19, 0.33], gridcolor: '#1e293b', range: [0, 100], side: 'right', title: 'KD' },
+                yaxis4: { domain: [0.0, 0.16], gridcolor: '#1e293b', side: 'right', title: 'MACD' },
+                hovermode: 'x unified',
+                dragmode: 'zoom'
             };
 
-            // 1. 主圖
-            mainChart = LightweightCharts.createChart(mainEl, { ...chartBaseOpts, width: mainEl.clientWidth, height: mainHeight });
-            candleSeries = mainChart.addCandlestickSeries({
-                upColor: '#C0392B', downColor: '#1E7E5A',
-                wickUpColor: '#C0392B', wickDownColor: '#1E7E5A'
-            });
+            const config = {
+                responsive: true,
+                displaylogo: false,
+                modeBarButtonsToAdd: ['drawline', 'drawopenpath', 'drawrect', 'drawcircle', 'eraseshape']
+            };
 
-            ma5Series = mainChart.addLineSeries({ color: '#D97706', lineWidth: 1.5, title: '5MA', visible: indState.ma5 });
-            ma10Series = mainChart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, title: '10MA', visible: indState.ma10 });
-            ma20Series = mainChart.addLineSeries({ color: '#7C3AED', lineWidth: 2, title: '20MA(月)', visible: indState.ma20 });
-            ma60Series = mainChart.addLineSeries({ color: '#0D9488', lineWidth: 1.5, title: '60MA(季)', visible: indState.ma60 });
-            ma120Series = mainChart.addLineSeries({ color: '#DB2777', lineWidth: 1.5, title: '120MA(半年)', visible: indState.ma120 });
-            ma240Series = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1.5, lineStyle: 2, title: '240MA(年)', visible: indState.ma240 });
-            
-            bbUpSeries = mainChart.addLineSeries({ color: 'rgba(148, 163, 184, 0.55)', lineWidth: 1, lineStyle: 1, title: '布林上軌', visible: indState.bb });
-            bbLowSeries = mainChart.addLineSeries({ color: 'rgba(148, 163, 184, 0.55)', lineWidth: 1, lineStyle: 1, title: '布林下軌', visible: indState.bb });
-            neckSeries = mainChart.addLineSeries({ color: '#B45309', lineWidth: 2, lineStyle: 1, title: '頸線', visible: indState.neck });
+            Plotly.newPlot('plotlyChartContainer', traces, layout, config);
+            translatePlotlyToolbar();
+        }
 
-            // 2. 成交量
-            volChart = LightweightCharts.createChart(volEl, { ...chartBaseOpts, width: volEl.clientWidth, height: 85 });
-            volSeries = volChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
-            volMaSeries = volChart.addLineSeries({ color: '#B45309', lineWidth: 1.5, lineStyle: 1, title: 'Vol-MA5' });
-
-            // 3. KD
-            kdChart = LightweightCharts.createChart(kdEl, { ...chartBaseOpts, width: kdEl.clientWidth, height: 85 });
-            kSeries = kdChart.addLineSeries({ color: '#D97706', lineWidth: 1.8, title: 'K(9)' });
-            dSeries = kdChart.addLineSeries({ color: '#2563EB', lineWidth: 1.8, title: 'D(9)' });
-
-            // 4. MACD
-            macdChart = LightweightCharts.createChart(macdEl, {
-                ...chartBaseOpts,
-                width: macdEl.clientWidth,
-                height: 85,
-                timeScale: { borderColor: '#1e293b', visible: true }
-            });
-            macdHistSeries = macdChart.addHistogramSeries({ title: 'OSC' });
-            macdDifSeries = macdChart.addLineSeries({ color: '#D97706', lineWidth: 1.5, title: 'DIF' });
-            macdDeaSeries = macdChart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, title: 'DEA' });
-
-            // 4 圖深度時間軸同步
-            const charts = [mainChart, volChart, kdChart, macdChart];
-            charts.forEach(srcChart => {
-                srcChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-                    if (isSyncing || !range) return;
-                    isSyncing = true;
-                    charts.forEach(targetChart => {
-                        if (targetChart !== srcChart) {
-                            targetChart.timeScale().setVisibleLogicalRange(range);
-                        }
-                    });
-                    isSyncing = false;
+        // 繁體中文工具列翻譯腳本 (100% 對齊台股 V9.8)
+        function translatePlotlyToolbar() {
+            const zhMap = {
+                "Download plot as a png": "下載圖表為 PNG 圖片",
+                "Zoom": "框選放大",
+                "Pan": "拖曳平移",
+                "Box Select": "方框選取",
+                "Lasso Select": "套索選取",
+                "Draw line": "畫直線 (趨勢線/支撐壓力線)",
+                "Draw open Freeform": "自由手繪筆",
+                "Draw closed Freeform": "畫封閉圖形",
+                "Draw circle": "畫圓圈 (標記關鍵位置)",
+                "Draw rectangle": "畫方框 (標記盤整箱型區間)",
+                "Erase active shape": "橡皮擦 (點選畫線後按此刪除)",
+                "Zoom in": "放大檢視",
+                "Zoom out": "縮小檢視",
+                "Autoscale": "自動適應比例",
+                "Reset axes": "還原初始畫面 (小房子)"
+            };
+            setTimeout(() => {
+                const btns = document.querySelectorAll('.modebar-btn');
+                btns.forEach(btn => {
+                    const t = btn.getAttribute('data-title');
+                    if (t && zhMap[t]) {
+                        btn.setAttribute('data-title', zhMap[t]);
+                        btn.setAttribute('title', zhMap[t]);
+                    }
                 });
-            });
-
-            // 十字線數值聯動（含日期）
-            mainChart.subscribeCrosshairMove(param => {
-                if (!param.time || !param.seriesData.get(candleSeries)) return;
-                const c = param.seriesData.get(candleSeries);
-                const m5 = param.seriesData.get(ma5Series);
-                const m20 = param.seriesData.get(ma20Series);
-                const m60 = param.seriesData.get(ma60Series);
-                const m120 = param.seriesData.get(ma120Series);
-                const m240 = param.seriesData.get(ma240Series);
-                const neck = param.seriesData.get(neckSeries);
-                
-                document.getElementById('legDate').innerText = param.time;
-                document.getElementById('legOpen').innerText = `$${c.open.toFixed(2)}`;
-                document.getElementById('legHigh').innerText = `$${c.high.toFixed(2)}`;
-                document.getElementById('legLow').innerText = `$${c.low.toFixed(2)}`;
-                document.getElementById('legClose').innerText = `$${c.close.toFixed(2)}`;
-                if(m5) document.getElementById('legMA5').innerText = `$${m5.value.toFixed(2)}`;
-                if(m20) document.getElementById('legMA20').innerText = `$${m20.value.toFixed(2)}`;
-                if(m60) document.getElementById('legMA60').innerText = `$${m60.value.toFixed(2)}`;
-                if(m120) document.getElementById('legMA120').innerText = `$${m120.value.toFixed(2)}`;
-                if(m240) document.getElementById('legMA240').innerText = `$${m240.value.toFixed(2)}`;
-                if(neck) document.getElementById('legNeck').innerText = `$${neck.value.toFixed(2)}`;
-            });
-
-            function resizeCharts() {
-                const w = mainEl.clientWidth;
-                mainChart.applyOptions({ width: w });
-                volChart.applyOptions({ width: w });
-                kdChart.applyOptions({ width: w });
-                macdChart.applyOptions({ width: w });
-            }
-
-            window.addEventListener('resize', resizeCharts);
-            setTimeout(resizeCharts, 250);
+            }, 500);
         }
 
         async function fetchStockData(symbol) {
@@ -682,40 +560,12 @@ HTML_CONTENT = """
             try {
                 const res = await fetch(`/api/quote/${symbol}?interval=${currentInterval}`);
                 const data = await res.json();
-                if(data.candles && data.candles.length > 0) {
-                    window._cachedCandles = data.candles;
+                if(data.dates && data.dates.length > 0) {
                     currentSpot = data.spot;
                     currentMA20 = data.ma20_val;
                     currentMA240 = data.ma240_val;
                     currentNeckline = data.neckline;
 
-                    candleSeries.setData(data.candles);
-                    ma5Series.setData(data.ma5);
-                    ma10Series.setData(data.ma10);
-                    ma20Series.setData(data.ma20);
-                    ma60Series.setData(data.ma60);
-                    ma120Series.setData(data.ma120);
-                    ma240Series.setData(data.ma240);
-                    bbUpSeries.setData(data.bb_up);
-                    bbLowSeries.setData(data.bb_low);
-                    neckSeries.setData(data.neckline_data);
-
-                    const volData = data.candles.map(c => ({
-                        time: c.time,
-                        value: c.volume,
-                        color: c.close >= c.open ? 'rgba(192, 57, 43, 0.7)' : 'rgba(30, 126, 90, 0.7)'
-                    }));
-                    volSeries.setData(volData);
-                    volMaSeries.setData(data.vol_ma5);
-
-                    kSeries.setData(data.k_data);
-                    dSeries.setData(data.d_data);
-
-                    macdHistSeries.setData(data.macd_hist);
-                    macdDifSeries.setData(data.macd_dif);
-                    macdDeaSeries.setData(data.macd_dea);
-
-                    // 標題顯示：代號 + 完整中英文公司名 + [交易所]
                     document.getElementById('chartTitle').innerText = `${symbol} ${data.name} [${data.exchange}]`;
                     
                     const pSign = data.chg >= 0 ? '▲' : '▼';
@@ -727,6 +577,7 @@ HTML_CONTENT = """
                     document.getElementById('stopLossDisplay').innerText = `頸線 $${currentNeckline} ／ 月線 $${currentMA20}`;
                     document.getElementById('qualityTag').innerText = data.quality_badge;
 
+                    renderPlotlyChart(data);
                     loadOptionChain(symbol);
                 }
             } catch(e) {
@@ -742,7 +593,6 @@ HTML_CONTENT = """
                 const expSelect = document.getElementById('expDateSelect');
                 expSelect.innerHTML = '';
                 
-                // 完全解鎖：市場該有多少到期日就全部加進去
                 data.expirations.forEach(exp => {
                     const opt = document.createElement('option');
                     opt.value = exp;
@@ -925,7 +775,6 @@ HTML_CONTENT = """
         function changeInterval(intv) { currentInterval = intv; fetchStockData(currentSymbol); }
 
         window.onload = () => {
-            initCharts();
             fetchIndicesData();
             loadScreenerList();
             fetchStockData("PLTR");
@@ -982,22 +831,17 @@ def run_v98_screener(sector: str = "ALL", mode: str = "LONG"):
             low_neck = float(df['Low'].iloc[-21:-1].min())
             v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
 
+            # 嚴格篩選：未達標者直接略過，不列入清單
             if mode == "LONG":
+                if not (c > high_neck and c > o and c > ma20 and v_ratio >= 1.2):
+                    continue
                 dist_neck = round(((c / high_neck) - 1.0) * 100.0, 1)
-                if c > high_neck and c > o and c > ma20 and v_ratio >= 1.2:
-                    score = "🔥 暴量突破"
-                elif c > ma20 and abs(dist_neck) <= 5.0:
-                    score = "🛡️ 頸線守候"
-                else:
-                    score = "💎 偏多整理"
+                score = "🔥 暴量突破"
             else:
+                if not (c < low_neck and c < o and c < ma20 and v_ratio >= 1.2):
+                    continue
                 dist_neck = round(((c / low_neck) - 1.0) * 100.0, 1)
-                if c < low_neck and c < o and c < ma20 and v_ratio >= 1.2:
-                    score = "⚡ 破底轉弱"
-                elif c < ma20:
-                    score = "⚠️ 空頭排列"
-                else:
-                    score = "📉 偏空震盪"
+                score = "⚡ 破底轉弱"
                 
             results.append({
                 "symbol": sym, "name": item["name"], "sector": item["sector"],
@@ -1015,7 +859,7 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     if df.empty:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    # 1. 均線系統 (5, 10, 20, 60, 120, 240)
+    # 1. 均線系統
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
@@ -1066,57 +910,26 @@ def get_quote_data(symbol: str, interval: str = "1d"):
 
     quality_badge = "🛡️ 距頸線 ≤ 5% 且站上月線" if dist_neck <= 5.0 and spot >= ma20_val else "⚠️ 乖離偏遠或月線下"
 
-    candles = []
-    ma5_data, ma10_data, ma20_data, ma60_data, ma120_data, ma240_data = [], [], [], [], [], []
-    bb_up_data, bb_low_data, neckline_data = [], [], []
-    vol_ma5_data, k_data, d_data = [], [], []
-    macd_hist_data, macd_dif_data, macd_dea_data = [], [], []
+    dates = [d.strftime("%Y-%m-%d") for d in df.index]
+    opens = [float(round(v, 2)) for v in df["Open"].values]
+    highs = [float(round(v, 2)) for v in df["High"].values]
+    lows = [float(round(v, 2)) for v in df["Low"].values]
+    closes = [float(round(v, 2)) for v in df["Close"].values]
+    volumes = [int(v) for v in df["Volume"].values]
 
-    for date, row in df.iterrows():
-        t_str = date.strftime("%Y-%m-%d")
-        candles.append({
-            "time": t_str,
-            "open": float(round(row["Open"], 2)),
-            "high": float(round(row["High"], 2)),
-            "low": float(round(row["Low"], 2)),
-            "close": float(round(row["Close"], 2)),
-            "volume": int(row["Volume"])
-        })
-        if not pd.isna(row["MA5"]): ma5_data.append({"time": t_str, "value": float(round(row["MA5"], 2))})
-        if not pd.isna(row["MA10"]): ma10_data.append({"time": t_str, "value": float(round(row["MA10"], 2))})
-        if not pd.isna(row["MA20"]): ma20_data.append({"time": t_str, "value": float(round(row["MA20"], 2))})
-        if not pd.isna(row["MA60"]): ma60_data.append({"time": t_str, "value": float(round(row["MA60"], 2))})
-        if not pd.isna(row["MA120"]): ma120_data.append({"time": t_str, "value": float(round(row["MA120"], 2))})
-        if not pd.isna(row["MA240"]): ma240_data.append({"time": t_str, "value": float(round(row["MA240"], 2))})
-        if not pd.isna(row["BB_UP"]): bb_up_data.append({"time": t_str, "value": float(round(row["BB_UP"], 2))})
-        if not pd.isna(row["BB_LOW"]): bb_low_data.append({"time": t_str, "value": float(round(row["BB_LOW"], 2))})
-        neckline_data.append({"time": t_str, "value": neckline})
-        if not pd.isna(row["Vol_MA5"]): vol_ma5_data.append({"time": t_str, "value": int(row["Vol_MA5"])})
-        k_data.append({"time": t_str, "value": float(round(row["K"], 1))})
-        d_data.append({"time": t_str, "value": float(round(row["D"], 1))})
+    def _clean_series(s):
+        return [float(round(v, 2)) if not pd.isna(v) else None for v in s.values]
 
-        m_val = float(round(row["MACD_HIST"], 2))
-        macd_hist_data.append({
-            "time": t_str,
-            "value": m_val,
-            "color": '#C0392B' if m_val >= 0 else '#1E7E5A'
-        })
-        macd_dif_data.append({"time": t_str, "value": float(round(row["DIF"], 2))})
-        macd_dea_data.append({"time": t_str, "value": float(round(row["DEA"], 2))})
-
-    # 動態穿透取得標準中英文名與交易所
     sym_clean = symbol.strip().upper()
     name_str = sym_clean
     exchange_str = "US"
     
-    # 先從本機對應表找常用中文
     for it in MARKET_UNIVERSE:
         if it["symbol"] == sym_clean:
             name_str = it["name"]
             exchange_str = it["market"]
             break
 
-    # 若未在常規表內，向 yfinance 抓取官方中英文名與交易所
     if name_str == sym_clean:
         try:
             info = ticker.info
@@ -1137,67 +950,60 @@ def get_quote_data(symbol: str, interval: str = "1d"):
         "neckline": neckline,
         "dist_neck": dist_neck,
         "quality_badge": quality_badge,
-        "candles": candles,
-        "ma5": ma5_data,
-        "ma10": ma10_data,
-        "ma20": ma20_data,
-        "ma60": ma60_data,
-        "ma120": ma120_data,
-        "ma240": ma240_data,
-        "bb_up": bb_up_data,
-        "bb_low": bb_low_data,
-        "neckline_data": neckline_data,
-        "vol_ma5": vol_ma5_data,
-        "k_data": k_data,
-        "d_data": d_data,
-        "macd_hist": macd_hist_data,
-        "macd_dif": macd_dif_data,
-        "macd_dea": macd_dea_data
+        "dates": dates,
+        "opens": opens,
+        "highs": highs,
+        "lows": lows,
+        "closes": closes,
+        "volumes": volumes,
+        "ma5": _clean_series(df["MA5"]),
+        "ma10": _clean_series(df["MA10"]),
+        "ma20": _clean_series(df["MA20"]),
+        "ma60": _clean_series(df["MA60"]),
+        "ma120": _clean_series(df["MA120"]),
+        "ma240": _clean_series(df["MA240"]),
+        "bb_up": _clean_series(df["BB_UP"]),
+        "bb_low": _clean_series(df["BB_LOW"]),
+        "vol_ma5": _clean_series(df["Vol_MA5"]),
+        "k": _clean_series(df["K"]),
+        "d": _clean_series(df["D"]),
+        "macd_hist": _clean_series(df["MACD_HIST"]),
+        "macd_dif": _clean_series(df["DIF"]),
+        "macd_dea": _clean_series(df["DEA"])
     }
 
 @app.get("/api/options/{symbol}")
 def get_options(symbol: str):
     ticker = yf.Ticker(symbol.strip().upper())
-    try:
-        expirations = ticker.options
-        if expirations and len(expirations) > 0:
-            chain_data = {}
-            # 完全解除到期日限制，有多少到期日全數帶入
-            for exp in expirations:
+    expirations = ticker.options
+    
+    # 只要市場有，完全如實輸出，絕不人為限制筆數
+    if expirations and len(expirations) > 0:
+        chain_data = {}
+        for exp in expirations:
+            try:
                 opt_chain = ticker.option_chain(exp)
                 puts, calls = [], []
                 for _, r in opt_chain.puts.iterrows():
                     puts.append({
                         "strike": float(r["strike"]),
-                        "bid": float(r["bid"]) if not pd.isna(r["bid"]) else 1.5,
-                        "ask": float(r["ask"]) if not pd.isna(r["ask"]) else 1.8,
+                        "bid": float(r["bid"]) if not pd.isna(r["bid"]) else 0.0,
+                        "ask": float(r["ask"]) if not pd.isna(r["ask"]) else 0.0,
                         "impliedVolatility": float(r["impliedVolatility"]) if not pd.isna(r["impliedVolatility"]) else 0.35
                     })
                 for _, r in opt_chain.calls.iterrows():
                     calls.append({
                         "strike": float(r["strike"]),
-                        "bid": float(r["bid"]) if not pd.isna(r["bid"]) else 1.5,
-                        "ask": float(r["ask"]) if not pd.isna(r["ask"]) else 1.8,
+                        "bid": float(r["bid"]) if not pd.isna(r["bid"]) else 0.0,
+                        "ask": float(r["ask"]) if not pd.isna(r["ask"]) else 0.0,
                         "impliedVolatility": float(r["impliedVolatility"]) if not pd.isna(r["impliedVolatility"]) else 0.35
                     })
                 chain_data[exp] = {"puts": puts, "calls": calls}
-            return {"expirations": list(chain_data.keys()), "chain": chain_data}
-    except Exception:
-        pass
-
-    # 防呆 Fallback
-    df = ticker.history(period="1d")
-    spot = float(df['Close'].iloc[-1]) if not df.empty else 186.0
-    fallback_exp = ["2026-11-20", "2026-12-18", "2027-01-15", "2027-03-19", "2027-06-18"]
-    fallback_chain = {}
-    for exp in fallback_exp:
-        puts, calls = [], []
-        for i in range(-6, 7):
-            stk = round(spot + i * 5, 2)
-            puts.append({"strike": stk, "bid": 2.5, "ask": 2.8, "impliedVolatility": 0.35})
-            calls.append({"strike": stk, "bid": 2.6, "ask": 2.9, "impliedVolatility": 0.35})
-        fallback_chain[exp] = {"puts": puts, "calls": calls}
-    return {"expirations": fallback_exp, "chain": fallback_chain}
+            except:
+                continue
+        return {"expirations": list(chain_data.keys()), "chain": chain_data}
+    
+    return {"expirations": [], "chain": {}}
 
 @app.get("/api/greeks")
 def get_greeks(S: float, K: float, T: float, sigma: float, type: str = "put"):
