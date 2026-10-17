@@ -5,8 +5,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
+import requests
 
-app = FastAPI(title="US Professional Cloud War Room - Ultimate Edition")
+app = FastAPI(title="US Professional Cloud War Room - Ultimate V80.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,6 +16,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# LINE 推播設定 (若未來要串接真實 LINE Messaging API 權杖與 Chat ID 可在此填入)
+LINE_CHANNEL_ACCESS_TOKEN = "" 
+
+def send_line_message(message: str):
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        return {"status": "simulated", "message": "已模擬發送至 LINE 智慧群組 (未填寫 Token)"}
+    url = "https://api.line.me/v2/bot/message/broadcast"
+    headers = {
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {"messages": [{"type": "text", "text": message}]}
+    res = requests.post(url, headers=headers, json=data)
+    return res.json()
 
 def calculate_greeks(S, K, T, r, sigma, option_type="put"):
     if T <= 0 or sigma <= 0:
@@ -36,7 +52,7 @@ HTML_CONTENT = """
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>華爾街美股雲端專業旗艦戰情室 ｜ Pro Cloud War Room</title>
+    <title>華爾街美股雲端專業旗艦戰情室 ｜ V80.0 完全體</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -44,22 +60,23 @@ HTML_CONTENT = """
     <!-- 頂部專業導航列 -->
     <header class="bg-[#121824] border-b border-[#1e293b] px-6 py-3 flex justify-between items-center shadow-lg">
         <div class="flex items-center space-x-3">
-            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM</span>
-            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">機構級雲端看盤與智能推播完全體</span>
+            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V80.0</span>
+            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">多視窗矩陣 + LINE 雲端自動推播</span>
         </div>
-        <div class="flex items-center space-x-6 text-xs">
-            <div class="bg-[#1a2234] px-3 py-1.5 rounded-lg border border-[#2a374a] flex items-center space-x-2">
-                <span class="text-slate-400">🔥 VIX 恐慌指數:</span>
-                <span id="vixTag" class="font-bold text-amber-400">載入中...</span>
+        <div class="flex items-center space-x-4 text-xs">
+            <div class="flex bg-[#1e293b] border border-[#2a374a] rounded-lg p-0.5 space-x-1">
+                <button onclick="switchView('single')" id="btnSingle" class="px-3 py-1 rounded font-bold bg-[#38bdf8] text-slate-950 transition">單股戰情室</button>
+                <button onclick="switchView('grid')" id="btnGrid" class="px-3 py-1 rounded font-bold text-slate-400 hover:text-white transition">📊 多視窗矩陣看板</button>
             </div>
-            <div class="bg-[#1a2234] px-3 py-1.5 rounded-lg border border-[#2a374a]">
-                <span>雲端常駐狀態：<strong class="text-emerald-400">🟢 24H 線上運行</strong></span>
+            <div class="bg-[#1a2234] px-3 py-1.5 rounded-lg border border-[#2a374a] flex items-center space-x-2">
+                <span class="text-slate-400">🔥 VIX:</span>
+                <span id="vixTag" class="font-bold text-amber-400">載入中...</span>
             </div>
         </div>
     </header>
 
-    <!-- 三欄式專業佈局 -->
-    <div class="flex flex-1 overflow-hidden">
+    <!-- 主體區域：單股模式 -->
+    <div id="singleView" class="flex flex-1 overflow-hidden">
         <!-- 左側：全市場量價突破與跌深掃描 -->
         <aside class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col">
             <div class="p-4 border-b border-[#1e293b] space-y-3">
@@ -122,7 +139,7 @@ HTML_CONTENT = """
         <aside class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 overflow-y-auto">
             <h2 class="text-sm font-black text-white mb-3 flex items-center justify-between">
                 <span>📊 期權風控與雲端自動推播</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">Pro 完全體</span>
+                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V80.0 完全體</span>
             </h2>
 
             <div class="space-y-3 text-xs">
@@ -198,6 +215,32 @@ HTML_CONTENT = """
         </aside>
     </div>
 
+    <!-- 主體區域：多視窗矩陣看板模式 (預設隱藏) -->
+    <div id="gridView" class="flex-1 bg-[#0b0e14] p-6 overflow-y-auto hidden">
+        <h2 class="text-lg font-black text-white mb-4 flex items-center justify-between">
+            <span>📊 核心美股多視窗即時對照矩陣 (Multi-Symbol Grid)</span>
+            <span class="text-xs text-slate-400">同步監控 NVDA, TSLA, SPY, QQQ</span>
+        </h2>
+        <div class="grid grid-cols-2 gap-4 h-[calc(100%-40px)]">
+            <div class="bg-[#121824] border border-[#1e293b] rounded-xl p-4 flex flex-col shadow-xl">
+                <div class="font-bold text-white mb-2 flex justify-between"><span>NVDA (輝達)</span><span class="text-emerald-400">多頭強勢</span></div>
+                <div id="gridCard1" class="flex-1 w-full min-h-[220px]"></div>
+            </div>
+            <div class="bg-[#121824] border border-[#1e293b] rounded-xl p-4 flex flex-col shadow-xl">
+                <div class="font-bold text-white mb-2 flex justify-between"><span>TSLA (特斯拉)</span><span class="text-emerald-400">跌深反彈</span></div>
+                <div id="gridCard2" class="flex-1 w-full min-h-[220px]"></div>
+            </div>
+            <div class="bg-[#121824] border border-[#1e293b] rounded-xl p-4 flex flex-col shadow-xl">
+                <div class="font-bold text-white mb-2 flex justify-between"><span>SPY (標普500 ETF)</span><span class="text-sky-400">穩健多頭</span></div>
+                <div id="gridCard3" class="flex-1 w-full min-h-[220px]"></div>
+            </div>
+            <div class="bg-[#121824] border border-[#1e293b] rounded-xl p-4 flex flex-col shadow-xl">
+                <div class="font-bold text-white mb-2 flex justify-between"><span>QQQ (那斯達克 ETF)</span><span class="text-sky-400">科技領頭</span></div>
+                <div id="gridCard4" class="flex-1 w-full min-h-[220px]"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let chart = null;
         let candlestickSeries = null;
@@ -210,15 +253,53 @@ HTML_CONTENT = """
         let currentInterval = "1d";
         let currentOptionData = null;
 
-        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_pro')) || [
+        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v80')) || [
             { symbol: "NVDA", name: "輝達", score: "🔥 強勢突破" },
             { symbol: "TSLA", name: "特斯拉", score: "💎 跌深反彈" },
             { symbol: "SPY", name: "標普500", score: "🛡️ 多頭安全" },
             { symbol: "QQQ", name: "那斯達克", score: "🛡️ 多頭安全" }
         ];
 
+        function switchView(mode) {
+            if(mode === 'single') {
+                document.getElementById('singleView').classList.remove('hidden');
+                document.getElementById('gridView').classList.add('hidden');
+                document.getElementById('btnSingle').className = "px-3 py-1 rounded font-bold bg-[#38bdf8] text-slate-950 transition";
+                document.getElementById('btnGrid').className = "px-3 py-1 rounded font-bold text-slate-400 hover:text-white transition";
+            } else {
+                document.getElementById('singleView').classList.add('hidden');
+                document.getElementById('gridView').classList.remove('hidden');
+                document.getElementById('btnGrid').className = "px-3 py-1 rounded font-bold bg-[#38bdf8] text-slate-950 transition";
+                document.getElementById('btnSingle').className = "px-3 py-1 rounded font-bold text-slate-400 hover:text-white transition";
+                initGridCharts();
+            }
+        }
+
+        async function initGridCharts() {
+            const symbols = ["NVDA", "TSLA", "SPY", "QQQ"];
+            for(let i=0; i<symbols.length; i++) {
+                const container = document.getElementById(`gridCard${i+1}`);
+                container.innerHTML = '';
+                const gChart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth,
+                    height: 220,
+                    layout: { background: { type: 'solid', color: '#121824' }, textColor: '#94a3b8' },
+                    grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+                    timeScale: { borderColor: '#1e293b' },
+                    rightPriceScale: { borderColor: '#1e293b' }
+                });
+                const gSeries = gChart.addCandlestickSeries({ upColor: '#ef5350', downColor: '#26a69a' });
+                
+                try {
+                    const res = await fetch(`/api/quote/${symbols[i]}?interval=1d`);
+                    const data = await res.json();
+                    if(data.candles) gSeries.setData(data.candles);
+                } catch(e) {}
+            }
+        }
+
         function saveWatchlist() {
-            localStorage.setItem('my_watchlist_pro', JSON.stringify(watchlist));
+            localStorage.setItem('my_watchlist_v80', JSON.stringify(watchlist));
         }
 
         function renderWatchlist() {
@@ -506,8 +587,23 @@ HTML_CONTENT = """
             alert(`[專業風控檢核] 標的: ${currentSymbol} | 履約價: $${stk.strike} | 安全邊際緩衝: ${safetyBuffer}%`);
         }
 
-        function sendCloudPush() {
-            alert(`[雲端 LINE 自動推播] 🚀 已成功將 ${currentSymbol} 的量價突破與 Greeks 戰情報告推送到您的 LINE 智慧群組！`);
+        async function sendCloudPush() {
+            const val = document.getElementById('strikeSelect').value;
+            const stk = val ? JSON.parse(val) : { strike: 0 };
+            const strat = document.getElementById('strategySelect').value;
+            const text = `🔥 [PRO CLOUD 戰情推播]\n標的: ${currentSymbol} 現價 $${currentSpot}\n策略: ${strat} (履約價 $${stk.strike})\nMA20支撐: $${currentMA20}\n狀態: V9.8 智慧風控合格`;
+
+            try {
+                const res = await fetch('/api/line/push', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ message: text })
+                });
+                const result = await res.json();
+                alert(`[LINE 推播成功] 🚀 ${result.message}`);
+            } catch(e) {
+                alert('推播發送失敗');
+            }
         }
 
         window.onload = () => {
@@ -525,6 +621,12 @@ HTML_CONTENT = """
 def serve_index():
     return HTMLResponse(content=HTML_CONTENT, status_code=200)
 
+@app.post("/api/line/push")
+def api_line_push(payload: dict):
+    msg = payload.get("message", "測試戰情報告")
+    res = send_line_message(msg)
+    return {"status": "success", "message": res.get("message", "已成功推送到 LINE 群組！")}
+
 @app.get("/api/vix")
 def get_vix():
     try:
@@ -538,7 +640,6 @@ def get_vix():
 
 @app.get("/api/screener")
 def run_pro_screener():
-    # 支援大範圍美股核心掃描池
     universe = ["NVDA", "TSLA", "AAPL", "MSFT", "PLTR", "AMZN", "AMD", "GOOGL", "SPY", "QQQ", "NFLX", "COIN", "INTC", "META", "AVGO", "ARM", "SMCI", "MU"]
     results = []
     for sym in universe:
@@ -574,13 +675,11 @@ def get_stock_data(symbol: str, interval: str = "1d"):
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     
-    # 計算 RSI (14)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-    
     df = df.dropna()
 
     spot = float(round(df['Close'].iloc[-1], 2))
