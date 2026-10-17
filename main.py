@@ -103,22 +103,23 @@ HTML_CONTENT = """
             --bg-card: #121824;
             --border-col: #1e293b;
             --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --input-bg: #0b0e14;
         }
-        .theme-slate {
-            --bg-main: #0f172a;
-            --bg-card: #1e293b;
-            --border-col: #334155;
-            --text-main: #f8fafc;
-        }
-        .theme-dark {
-            --bg-main: #000000;
-            --bg-card: #0d0d0d;
-            --border-col: #262626;
-            --text-main: #e5e5e5;
+        /* 柔和淺色模式（溫和米灰，老花友善不刺眼） */
+        .theme-light {
+            --bg-main: #f1f5f9;
+            --bg-card: #ffffff;
+            --border-col: #cbd5e1;
+            --text-main: #0f172a;
+            --text-muted: #475569;
+            --input-bg: #f8fafc;
         }
         body { background-color: var(--bg-main); color: var(--text-main); }
         .bg-card { background-color: var(--bg-card); }
         .border-theme { border-color: var(--border-col); }
+        .text-muted { color: var(--text-muted); }
+        .bg-input { background-color: var(--input-bg); }
 
         @media (max-width: 1024px) {
             #mainLayout { flex-direction: column !important; height: auto !important; overflow-y: auto !important; }
@@ -135,62 +136,58 @@ HTML_CONTENT = """
     </style>
 </head>
 <body id="bodyRoot" class="font-sans antialiased min-h-screen flex flex-col">
-    <!-- 頂部大盤溫度計全市場看板 -->
+    <!-- 頂部看板 -->
     <header class="bg-card border-b border-theme px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
         <div class="flex justify-between items-center">
             <div class="flex items-center space-x-2">
                 <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8</span>
-                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">完全對齊台股 V9.8</span>
-                <button onclick="toggleSettingsDrawer()" class="text-xs bg-[#1e293b] hover:bg-[#2a374a] text-slate-300 px-2 py-0.5 rounded border border-slate-600 transition">⚙️ 設定</button>
-                <button onclick="openChangeLogModal()" class="text-xs bg-[#1e293b] hover:bg-[#2a374a] text-amber-300 px-2 py-0.5 rounded border border-amber-500/40 transition">📜 改版紀錄</button>
+                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">旗艦完全體</span>
+                <button onclick="toggleSettingsDrawer()" class="text-xs bg-card hover:opacity-80 px-2.5 py-0.5 rounded border border-theme transition font-bold">⚙️ 設定 (外觀/字體)</button>
+                <button onclick="openChangeLogModal()" class="text-xs bg-card hover:opacity-80 text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 transition font-bold">📜 改版紀錄</button>
             </div>
             <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold shrink-0">🔄 刷新溫度計</button>
         </div>
 
         <div class="grid grid-cols-5 grid-indices gap-1.5 text-xs font-mono">
-            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">🏛️ 道瓊</span><span id="idx_dji" class="font-bold text-white">--</span>
+            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-muted font-bold">🏛️ 道瓊</span><span id="idx_dji" class="font-bold">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">💻 那指</span><span id="idx_ixic" class="font-bold text-white">--</span>
+            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-muted font-bold">💻 那指</span><span id="idx_ixic" class="font-bold">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">⚡ 費半</span><span id="idx_sox" class="font-bold text-white">--</span>
+            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-muted font-bold">⚡ 費半</span><span id="idx_sox" class="font-bold">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">📊 標普</span><span id="idx_spx" class="font-bold text-white">--</span>
+            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-muted font-bold">📊 標普</span><span id="idx_spx" class="font-bold">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-amber-400 font-bold">🔥 恐慌</span><span id="idx_vix" class="font-bold text-amber-400">--</span>
+            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-amber-500 font-bold">🔥 恐慌</span><span id="idx_vix" class="font-bold text-amber-500">--</span>
             </div>
         </div>
 
-        <!-- ⚙️ 可收合設定抽屜 -->
-        <div id="settingsDrawer" class="hidden bg-[#0b0e14] border border-theme rounded-lg p-3 mt-1.5 text-xs space-y-3">
+        <!-- ⚙️ 可收合設定抽屜 (深色/淺色柔和 ＋ 老花友善字體切換) -->
+        <div id="settingsDrawer" class="hidden bg-input border border-theme rounded-lg p-3 mt-1.5 text-xs space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-theme pb-2">
-                <div class="flex items-center space-x-2">
-                    <span class="text-slate-400 font-bold">🎨 主題配色：</span>
-                    <label class="cursor-pointer flex items-center space-x-1">
-                        <input type="radio" name="themeRadio" value="default" checked onchange="switchTheme('default')">
-                        <span>極夜黑</span>
+                <div class="flex items-center space-x-3">
+                    <span class="font-bold">🎨 主題配色：</span>
+                    <label class="cursor-pointer flex items-center space-x-1.5">
+                        <input type="radio" name="themeRadio" value="dark" checked onchange="switchTheme('dark')">
+                        <span class="font-bold">深色模式 (極夜黑)</span>
                     </label>
-                    <label class="cursor-pointer flex items-center space-x-1">
-                        <input type="radio" name="themeRadio" value="slate" onchange="switchTheme('slate')">
-                        <span>台股深灰藍 (溫和護眼)</span>
-                    </label>
-                    <label class="cursor-pointer flex items-center space-x-1">
-                        <input type="radio" name="themeRadio" value="dark" onchange="switchTheme('dark')">
-                        <span>純黑 AMOLED</span>
+                    <label class="cursor-pointer flex items-center space-x-1.5">
+                        <input type="radio" name="themeRadio" value="light" onchange="switchTheme('light')">
+                        <span class="font-bold text-amber-500">淺色模式 (柔和護眼米灰)</span>
                     </label>
                 </div>
                 <div class="flex items-center space-x-2">
-                    <span class="text-slate-400 font-bold">🔤 字體大小：</span>
-                    <button onclick="setFontSize('normal')" class="px-2 py-0.5 rounded bg-card border border-theme">標準</button>
-                    <button onclick="setFontSize('large')" class="px-2 py-0.5 rounded bg-card border border-theme">大</button>
-                    <button onclick="setFontSize('xlarge')" class="px-2 py-0.5 rounded bg-card border border-theme">特大</button>
+                    <span class="font-bold">👓 老花友善字體：</span>
+                    <button onclick="setFontSize('normal')" id="btn_font_normal" class="px-2.5 py-1 rounded bg-card border border-[#38bdf8] font-bold">標準</button>
+                    <button onclick="setFontSize('large')" id="btn_font_large" class="px-2.5 py-1 rounded bg-card border border-theme">大字 (推薦)</button>
+                    <button onclick="setFontSize('xlarge')" id="btn_font_xlarge" class="px-2.5 py-1 rounded bg-card border border-theme">特大字</button>
                 </div>
             </div>
-            <div class="flex flex-wrap items-center gap-4 text-slate-300">
+            <div class="flex flex-wrap items-center gap-4 text-muted">
                 <div class="flex items-center space-x-2">
                     <span>頸線天數 (N日)：</span>
                     <input type="number" id="cfg_neckDays" value="20" min="5" max="60" class="w-14 bg-card border border-theme rounded px-1.5 py-0.5 text-center text-white" onchange="loadScreenerList()">
@@ -199,7 +196,7 @@ HTML_CONTENT = """
                     <span>5日均量倍數 (量比)：</span>
                     <input type="number" id="cfg_volRatio" value="1.2" step="0.1" min="1.0" max="3.0" class="w-16 bg-card border border-theme rounded px-1.5 py-0.5 text-center text-white" onchange="loadScreenerList()">
                 </div>
-                <span class="text-slate-500">※ 修改參數後左側篩選清單將即時重新計算過濾</span>
+                <span>※ 修改參數後左側篩選清單將即時重新計算過濾</span>
             </div>
         </div>
     </header>
@@ -210,16 +207,16 @@ HTML_CONTENT = """
         <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
             <div class="p-3 border-b border-theme space-y-2">
                 <div>
-                    <label class="text-[11px] text-slate-400 font-bold block mb-1">🎯 選股多空方向：</label>
+                    <label class="text-[11px] text-muted font-bold block mb-1">🎯 選股多空方向：</label>
                     <div class="grid grid-cols-2 gap-1.5">
                         <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#C0392B] text-white transition">📈 多方突破(創高)</button>
-                        <button onclick="setRadarMode('SHORT')" id="mode_short" class="py-1 rounded text-xs font-bold bg-[#1e293b] text-slate-400 hover:text-white transition">📉 空方破底(避險)</button>
+                        <button onclick="setRadarMode('SHORT')" id="mode_short" class="py-1 rounded text-xs font-bold bg-input text-muted hover:text-white transition">📉 空方破底(避險)</button>
                     </div>
                 </div>
 
                 <div>
-                    <label class="text-[11px] text-slate-400 font-bold block mb-1">🏛️ 市場板塊大池：</label>
-                    <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
+                    <label class="text-[11px] text-muted font-bold block mb-1">🏛️ 市場板塊大池：</label>
+                    <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-input border border-theme rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
                         <option value="ALL">🌐 全市場精選大池 (全部標的)</option>
                         <option value="SOX">⚡ 費城半導體 (SOX / 晶片軍火)</option>
                         <option value="NASDAQ">💻 那斯達克 100 (科技核心主力)</option>
@@ -230,27 +227,26 @@ HTML_CONTENT = """
                 </div>
 
                 <div class="flex gap-2">
-                    <input id="customSymbol" type="text" placeholder="全美股代號 (例: NVDA, IONQ, BABA)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-xs text-white uppercase focus:outline-none focus:border-[#38bdf8]">
+                    <input id="customSymbol" type="text" placeholder="全美股代號 (例: NVDA, IONQ, BABA)" class="flex-1 bg-input border border-theme rounded px-3 py-1.5 text-xs uppercase focus:outline-none focus:border-[#38bdf8]">
                     <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-xs transition">穿透診斷</button>
                 </div>
             </div>
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：圖表區域 (含日K / 週K / 月K 完整切換) -->
+        <!-- 中間：圖表區域 -->
         <main id="centerMain" class="flex-1 flex flex-col p-3 overflow-y-auto">
             <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
                 <div class="flex items-center space-x-2">
-                    <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">載入中...</h1>
-                    <!-- ⭐ 日K / 週K / 月K 三段切換膠囊按鈕組 -->
+                    <h1 id="chartTitle" class="text-base md:text-xl font-black tracking-wide">載入中...</h1>
                     <div class="flex bg-card border border-theme rounded p-0.5 space-x-1 text-xs">
                         <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950 transition">日K</button>
-                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white transition">週K</button>
-                        <button onclick="changeInterval('1mo')" id="btn_1mo" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white transition">月K</button>
+                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-muted hover:opacity-100 transition">週K</button>
+                        <button onclick="changeInterval('1mo')" id="btn_1mo" class="px-2.5 py-0.5 rounded font-bold text-muted hover:opacity-100 transition">月K</button>
                     </div>
                 </div>
                 <div class="flex items-center space-x-2">
-                    <div id="qualityTag" class="text-[10px] md:text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">
+                    <div id="qualityTag" class="text-[10px] md:text-xs bg-emerald-500/20 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">
                         🛡️ 距頸線 ≤ 5%
                     </div>
                     <div id="currentPriceTag" class="text-sm md:text-base font-bold bg-card px-3 py-1 rounded-lg border border-theme shadow">
@@ -259,39 +255,44 @@ HTML_CONTENT = """
                 </div>
             </div>
 
-            <!-- 1. 上方：均線與指標開關膠囊列 -->
+            <!-- 1. 均線開關膠囊列 -->
             <div class="flex flex-wrap items-center gap-1.5 mb-1.5 text-xs">
-                <span class="text-slate-400 font-bold mr-1">📐 均線/指標:</span>
+                <span class="text-muted font-bold mr-1">📐 均線/指標:</span>
                 <button onclick="toggleIndicator('ma5')" id="pill_ma5" class="pill-active px-2 py-0.5 rounded border border-[#D97706] text-[#D97706] text-[11px] transition">5MA(橘)</button>
                 <button onclick="toggleIndicator('ma10')" id="pill_ma10" class="pill-inactive px-2 py-0.5 rounded border border-[#2563EB] text-[#2563EB] text-[11px] transition">10MA(藍)</button>
                 <button onclick="toggleIndicator('ma20')" id="pill_ma20" class="pill-active px-2 py-0.5 rounded border border-[#7C3AED] text-[#7C3AED] text-[11px] transition">20MA(紫)</button>
                 <button onclick="toggleIndicator('ma60')" id="pill_ma60" class="pill-active px-2 py-0.5 rounded border border-[#0D9488] text-[#0D9488] text-[11px] transition">60MA(綠)</button>
                 <button onclick="toggleIndicator('ma120')" id="pill_ma120" class="pill-active px-2 py-0.5 rounded border border-[#DB2777] text-[#DB2777] text-[11px] transition">120MA(桃)</button>
                 <button onclick="toggleIndicator('ma240')" id="pill_ma240" class="pill-active px-2 py-0.5 rounded border border-[#64748b] text-[#cbd5e1] text-[11px] transition">240MA(年線)</button>
-                <button onclick="toggleIndicator('bb')" id="pill_bb" class="pill-inactive px-2 py-0.5 rounded border border-[#64748b] text-slate-300 text-[11px] transition">布林通道</button>
+                <button onclick="toggleIndicator('bb')" id="pill_bb" class="pill-inactive px-2 py-0.5 rounded border border-[#64748b] text-muted text-[11px] transition">布林通道</button>
                 <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309] text-[#B45309] text-[11px] transition">20日頸線</button>
             </div>
 
-            <!-- 2. 中間：繁體中文線圖工具列 (位置移至 MA 下方、K 線上方置中) -->
-            <div class="flex justify-center items-center bg-card border border-theme py-1 px-3 rounded-lg text-xs text-slate-300 mb-2 gap-2 shadow">
+            <!-- 2. 居中繁體中文畫線工具列（支援畫直線、方框、圓形，修復橡皮擦與一鍵清空） -->
+            <div class="flex flex-wrap justify-center items-center bg-card border border-theme py-1.5 px-3 rounded-lg text-xs mb-2 gap-2 shadow">
                 <span class="font-bold text-[#38bdf8] mr-1">🛠️ 中文畫線工具:</span>
-                <button onclick="setPlotlyMode('drawline')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition" title="滑鼠按住拖曳畫趨勢線或水平線">📏 畫直線(趨勢/壓力)</button>
-                <button onclick="setPlotlyMode('drawrect')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition" title="畫盤整箱型區間">📦 畫方框(盤整箱)</button>
-                <button onclick="setPlotlyMode('drawcircle')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition" title="標記轉折圓圈">⭕ 畫圓形</button>
-                <button onclick="setPlotlyMode('eraseshape')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme text-red-400 transition" title="點擊線條刪除">🧹 橡皮擦</button>
-                <span class="text-slate-600">|</span>
-                <button onclick="setPlotlyMode('zoom')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition">🔍 框選放大</button>
-                <button onclick="setPlotlyMode('pan')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition">✋ 拖曳平移</button>
-                <button onclick="resetPlotlyAxes()" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition">🏠 還原初始</button>
+                <button onclick="setPlotlyMode('drawline')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition font-bold" title="拖曳畫出趨勢線或水平支撐壓力線">📏 畫直線(趨勢/壓力)</button>
+                <button onclick="setPlotlyMode('drawrect')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition font-bold" title="畫盤整箱型區間">📦 畫方框(盤整箱)</button>
+                <button onclick="setPlotlyMode('drawcircle')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition font-bold" title="標記轉折圓圈">⭕ 畫圓形</button>
+                
+                <span class="text-muted">|</span>
+                <!-- 修復後的橡皮擦與直接一鍵清空按鈕 -->
+                <button onclick="setPlotlyMode('eraseshape')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-red-500/50 text-red-500 transition font-bold" title="滑鼠點擊畫線即可刪除">🧹 點選刪除單條</button>
+                <button onclick="clearAllShapes()" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-red-500 text-red-500 transition font-bold" title="清空畫面上所有的自訂線條與圖形">🗑️ 一鍵清空所有畫線</button>
+                
+                <span class="text-muted">|</span>
+                <button onclick="setPlotlyMode('zoom')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition">🔍 框選放大</button>
+                <button onclick="setPlotlyMode('pan')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition">✋ 拖曳平移</button>
+                <button onclick="resetPlotlyAxes()" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition">🏠 還原初始</button>
             </div>
 
-            <!-- 3. 下方：Plotly 原生 4 層圖表容器 -->
+            <!-- 3. Plotly 原生 4 層圖表容器 -->
             <div id="plotlyChartContainer" class="bg-card border border-theme rounded-xl p-2 w-full h-[600px] md:h-[660px]"></div>
         </main>
 
         <!-- 右側：八大選擇權策略風控與 LINE 推播 -->
         <aside id="rightSidebar" class="w-96 bg-card border-l border-theme flex flex-col p-4 shrink-0">
-            <h2 class="text-sm font-black text-white mb-2.5 flex items-center justify-between">
+            <h2 class="text-sm font-black mb-2.5 flex items-center justify-between">
                 <span>📊 選擇權全市場策略風控</span>
                 <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">真實市場數據直通</span>
             </h2>
@@ -299,14 +300,14 @@ HTML_CONTENT = """
             <div class="space-y-2.5 text-xs">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <div>
-                        <label class="text-slate-400 block mb-1">到期日</label>
-                        <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
+                        <label class="text-muted block mb-1">到期日</label>
+                        <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-input border border-theme rounded p-2 font-bold focus:outline-none focus:border-[#38bdf8]">
                             <option value="">載入中...</option>
                         </select>
                     </div>
                     <div>
-                        <label class="text-slate-400 block mb-1">策略類型 (8大主流)</label>
-                        <select id="strategySelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
+                        <label class="text-muted block mb-1">策略類型 (8大主流)</label>
+                        <select id="strategySelect" onchange="onExpirationChange()" class="w-full bg-input border border-theme rounded p-2 font-bold focus:outline-none focus:border-[#38bdf8]">
                             <optgroup label="💰 賣方穩健收租">
                                 <option value="csp" selected>Short Put (低接收租)</option>
                                 <option value="cc">Covered Call (現股包租公)</option>
@@ -325,47 +326,47 @@ HTML_CONTENT = """
                     </div>
                 </div>
 
-                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-1">
+                <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
                     <div class="flex justify-between items-center">
-                        <span class="text-slate-400">現價 / 20MA(月線) 支撐</span>
-                        <span id="spotDisplay" class="text-white font-bold">-</span>
+                        <span class="text-muted">現價 / 20MA(月線) 支撐</span>
+                        <span id="spotDisplay" class="font-bold">-</span>
                     </div>
                     <div class="flex justify-between items-center">
-                        <span class="text-slate-400">停損參考點位</span>
-                        <span id="stopLossDisplay" class="text-amber-400 font-bold">頸線 / 月線</span>
+                        <span class="text-muted">停損參考點位</span>
+                        <span id="stopLossDisplay" class="text-amber-500 font-bold">頸線 / 月線</span>
                     </div>
                 </div>
 
-                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a]">
+                <div class="bg-input p-2.5 rounded-lg border border-theme">
                     <div class="flex justify-between items-center mb-1">
-                        <label class="text-slate-400">目標履約價 (Strike)</label>
+                        <label class="text-muted">目標履約價 (Strike)</label>
                         <span class="text-[10px] text-[#38bdf8] cursor-pointer hover:underline" onclick="autoAlignMA20()">🎯 智慧對齊 MA20</span>
                     </div>
-                    <select id="strikeSelect" onchange="onStrikeChange()" class="w-full bg-[#121824] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
+                    <select id="strikeSelect" onchange="onStrikeChange()" class="w-full bg-card border border-theme rounded p-2 font-bold focus:outline-none focus:border-[#38bdf8]">
                         <option value="">請選擇到期日...</option>
                     </select>
                 </div>
 
                 <!-- Payoff 損益分佈圖 -->
-                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-1">
+                <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
                     <div class="font-bold text-[#38bdf8] flex justify-between items-center text-[11px]">
                         <span>📈 Payoff 損益分佈預覽</span>
                     </div>
-                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-[#121824] p-1.5 rounded border border-theme">
-                        <div>最大獲利: <strong id="payoffMax" class="text-emerald-400">--</strong></div>
-                        <div>最大虧損: <strong id="payoffMin" class="text-red-400">--</strong></div>
+                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-card p-1.5 rounded border border-theme">
+                        <div>最大獲利: <strong id="payoffMax" class="text-emerald-500">--</strong></div>
+                        <div>最大虧損: <strong id="payoffMin" class="text-red-500">--</strong></div>
                     </div>
-                    <canvas id="payoffCanvas" height="75" class="w-full bg-[#121824] rounded border border-theme mt-1"></canvas>
+                    <canvas id="payoffCanvas" height="75" class="w-full bg-card rounded border border-theme mt-1"></canvas>
                 </div>
 
                 <!-- Greeks 風險敏感度 -->
-                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-1">
+                <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
                     <div class="font-bold text-[#38bdf8] border-b border-theme pb-0.5 text-[11px]">⚡ Greeks 風險敏感度</div>
                     <div class="grid grid-cols-2 gap-2 text-[11px]">
-                        <div>Delta: <strong id="valDelta" class="text-white">-</strong></div>
-                        <div>Theta: <strong id="valTheta" class="text-amber-400">-</strong></div>
-                        <div>Gamma: <strong id="valGamma" class="text-white">-</strong></div>
-                        <div>Vega: <strong id="valVega" class="text-white">-</strong></div>
+                        <div>Delta: <strong id="valDelta">-</strong></div>
+                        <div>Theta: <strong id="valTheta" class="text-amber-500">-</strong></div>
+                        <div>Gamma: <strong id="valGamma">-</strong></div>
+                        <div>Vega: <strong id="valVega">-</strong></div>
                     </div>
                 </div>
 
@@ -387,36 +388,30 @@ HTML_CONTENT = """
             <div class="flex justify-between items-center border-b border-theme pb-2">
                 <div class="flex items-center space-x-2">
                     <span class="text-lg">📜</span>
-                    <h3 class="text-base font-black text-white">美股多空雷達戰情室 ｜ 歷次版本更新紀錄</h3>
+                    <h3 class="text-base font-black">美股多空雷達戰情室 ｜ 歷次版本更新紀錄</h3>
                 </div>
-                <button onclick="closeChangeLogModal()" class="text-slate-400 hover:text-white text-base">✕</button>
+                <button onclick="closeChangeLogModal()" class="text-muted hover:opacity-100 text-base">✕</button>
             </div>
-            <div class="space-y-3 text-xs max-h-[420px] overflow-y-auto pr-2 text-slate-300 font-sans">
+            <div class="space-y-3 text-xs max-h-[420px] overflow-y-auto pr-2 text-muted font-sans">
                 <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
-                    <div class="font-bold text-white text-sm">V9.8 旗艦完全體 (2026-10-17)</div>
-                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
-                        <li>新增「月K」長線視角（日K / 週K / 月K 全面支援）。</li>
+                    <div class="font-bold text-sm">V9.8 旗艦完全體 (2026-10-17)</div>
+                    <ul class="list-disc list-inside mt-1 space-y-0.5">
+                        <li>新增「月K」長線大格局走勢（日K / 週K / 月K 全面支援）。</li>
                         <li>全面導入 Plotly 專業多層圖表，原汁原味整合中文畫趨勢線、方框與橡皮擦。</li>
+                        <li>修復橡皮擦與新增「一鍵清空所有畫線」功能，徹底解決無法刪除線條痛點。</li>
+                        <li>精簡外觀為「深色」與「淺色（柔和米灰護眼）」兩種模式，並支援老花特大字調節。</li>
                         <li>四圖（K線/布林、成交量、KD、MACD）共用 X 軸完全同步縮放與平移。</li>
                         <li>補齊 120MA（桃紅）並支援均線即時膠囊開關切換。</li>
                         <li>選擇權策略擴充為 8 大主流策略（Short Put, Covered Call, Spreads, Straddle）。</li>
                         <li>拔除所有假數據 fallback，期權合約如實直通，無合約真實提示。</li>
-                        <li>加入自適應設定欄（深灰藍護眼主題、字體調節、篩選參數調整）。</li>
                     </ul>
                 </div>
                 <div class="border-l-2 border-slate-600 pl-3 py-1">
-                    <div class="font-bold text-slate-300">V9.5 ~ V9.7 雲端整合版</div>
-                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
+                    <div class="font-bold">V9.5 ~ V9.7 雲端整合版</div>
+                    <ul class="list-disc list-inside mt-1 space-y-0.5">
                         <li>新增道瓊、那指、費半、標普、VIX 五大指數溫度計。</li>
                         <li>LINE 官方 Messaging API 推播串接與 Webhook Group ID 綁定。</li>
                         <li>夏令與冬令美股交易時間自動偵測與三段式智慧排程架構。</li>
-                    </ul>
-                </div>
-                <div class="border-l-2 border-slate-700 pl-3 py-1">
-                    <div class="font-bold text-slate-400">V1.0 ~ V9.0 核心引擎奠基</div>
-                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
-                        <li>完成台股多空雷達 V9.8 標準色碼（紅漲綠跌、均線標準體系）。</li>
-                        <li>Black-Scholes 選擇權定價模型與 Greeks 敏感度計算引擎。</li>
                     </ul>
                 </div>
             </div>
@@ -430,11 +425,11 @@ HTML_CONTENT = """
             <div class="flex justify-between items-center border-b border-theme pb-2">
                 <div class="flex items-center space-x-2">
                     <span class="w-3 h-3 bg-[#06C755] rounded-full"></span>
-                    <h3 class="text-sm font-black text-white">📲 美股多空雷達 V9.8 ｜ LINE 戰報</h3>
+                    <h3 class="text-sm font-black">📲 美股多空雷達 V9.8 ｜ LINE 戰報</h3>
                 </div>
-                <button onclick="closeLineModal()" class="text-slate-400 hover:text-white text-sm">✕</button>
+                <button onclick="closeLineModal()" class="text-muted hover:opacity-100 text-sm">✕</button>
             </div>
-            <div class="bg-[#0b0e14] p-3.5 rounded-xl border border-theme text-xs font-mono text-slate-300 space-y-1.5 whitespace-pre-wrap max-h-[340px] overflow-y-auto" id="linePreviewText"></div>
+            <div class="bg-input p-3.5 rounded-xl border border-theme text-xs font-mono text-muted space-y-1.5 whitespace-pre-wrap max-h-[340px] overflow-y-auto" id="linePreviewText"></div>
             <button onclick="closeLineModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-xs transition">確 認</button>
         </div>
     </div>
@@ -442,7 +437,7 @@ HTML_CONTENT = """
     <script>
         let currentSpot = 0, currentMA20 = 0, currentMA240 = 0, currentNeckline = 0;
         let currentSymbol = "PLTR";
-        let currentInterval = "1d"; // 1d, 1wk, 1mo
+        let currentInterval = "1d";
         let currentOptionData = null;
         let currentSector = "ALL";
         let currentRadarMode = "LONG";
@@ -458,18 +453,27 @@ HTML_CONTENT = """
             drawer.classList.toggle('hidden');
         }
 
+        // ⭐ 深色 / 淺色柔和 兩大主題切換
         function switchTheme(theme) {
             const root = document.getElementById('bodyRoot');
-            root.className = "font-sans antialiased min-h-screen flex flex-col";
-            if (theme === 'slate') root.classList.add('theme-slate');
-            else if (theme === 'dark') root.classList.add('theme-dark');
+            if (theme === 'light') {
+                root.classList.add('theme-light');
+            } else {
+                root.classList.remove('theme-light');
+            }
             if (currentRawData) renderPlotlyChart(currentRawData);
         }
 
+        // ⭐ 老花友善字體切換（標準 / 大字 120% / 特大字 140%）
         function setFontSize(size) {
             const root = document.documentElement;
-            if (size === 'large') root.style.fontSize = '17px';
-            else if (size === 'xlarge') root.style.fontSize = '18.5px';
+            ['normal', 'large', 'xlarge'].forEach(s => {
+                const btn = document.getElementById(`btn_font_${s}`);
+                if (btn) btn.className = (s === size) ? "px-2.5 py-1 rounded bg-card border border-[#38bdf8] font-bold" : "px-2.5 py-1 rounded bg-card border border-theme";
+            });
+
+            if (size === 'large') root.style.fontSize = '19.2px';
+            else if (size === 'xlarge') root.style.fontSize = '22.4px';
             else root.style.fontSize = '16px';
         }
 
@@ -480,10 +484,10 @@ HTML_CONTENT = """
             currentRadarMode = mode;
             if (mode === 'LONG') {
                 document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-[#C0392B] text-white transition";
-                document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-[#1e293b] text-slate-400 hover:text-white transition";
+                document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-input text-muted hover:text-white transition";
             } else {
                 document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-[#1E7E5A] text-white transition";
-                document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-[#1e293b] text-slate-400 hover:text-white transition";
+                document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-input text-muted hover:text-white transition";
             }
             loadScreenerList();
         }
@@ -503,7 +507,7 @@ HTML_CONTENT = """
                 document.getElementById('idx_ixic').innerHTML = fmtIdx(data.ixic);
                 document.getElementById('idx_sox').innerHTML = fmtIdx(data.sox);
                 document.getElementById('idx_spx').innerHTML = fmtIdx(data.spx);
-                document.getElementById('idx_vix').innerHTML = `<span class="text-amber-400">${data.vix.close} (${data.vix.status})</span>`;
+                document.getElementById('idx_vix').innerHTML = `<span class="text-amber-500">${data.vix.close} (${data.vix.status})</span>`;
             } catch(e) {}
         }
 
@@ -527,19 +531,19 @@ HTML_CONTENT = """
             const container = document.getElementById('watchlist');
             container.innerHTML = '';
             if (!universeData || universeData.length === 0) {
-                container.innerHTML = `<div class="p-4 text-center text-xs text-slate-500">目前時段無符合 ${currentRadarMode === 'LONG' ? '多方突破' : '空方破底'} 之標的</div>`;
+                container.innerHTML = `<div class="p-4 text-center text-xs text-muted">目前時段無符合 ${currentRadarMode === 'LONG' ? '多方突破' : '空方破底'} 之標的</div>`;
                 return;
             }
             universeData.forEach((item, idx) => {
                 const div = document.createElement('div');
-                div.className = "flex items-center justify-between px-3 py-2 rounded-lg bg-[#0b0e14] hover:bg-[#1a2234] transition group border border-theme";
+                div.className = "flex items-center justify-between px-3 py-2 rounded-lg bg-input hover:opacity-80 transition group border border-theme";
                 div.innerHTML = `
                     <div onclick="fetchStockData('${item.symbol}')" class="flex-1 cursor-pointer">
-                        <div class="font-bold text-white group-hover:text-[#38bdf8] text-xs flex justify-between">
-                            <span>${item.symbol} <span class="text-[10px] text-amber-400">[${item.sector}]</span></span>
-                            <span class="text-[10px] text-emerald-400 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${item.score}</span>
+                        <div class="font-bold group-hover:text-[#38bdf8] text-xs flex justify-between">
+                            <span>${item.symbol} <span class="text-[10px] text-amber-500">[${item.sector}]</span></span>
+                            <span class="text-[10px] text-emerald-500 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${item.score}</span>
                         </div>
-                        <div class="text-[11px] text-slate-400 flex justify-between mt-0.5">
+                        <div class="text-[11px] text-muted flex justify-between mt-0.5">
                             <span class="truncate max-w-[120px]">${item.name}</span>
                             <span>距頸線 ${item.dist_neck_pct}%</span>
                         </div>
@@ -568,6 +572,7 @@ HTML_CONTENT = """
             if (currentRawData) renderPlotlyChart(currentRawData);
         }
 
+        // ⭐ 畫線模式切換
         function setPlotlyMode(mode) {
             const el = document.getElementById('plotlyChartContainer');
             if (!el || !el._fullLayout) return;
@@ -577,6 +582,14 @@ HTML_CONTENT = """
             else if (mode === 'eraseshape') Plotly.relayout(el, { dragmode: 'eraseshape' });
             else if (mode === 'zoom') Plotly.relayout(el, { dragmode: 'zoom' });
             else if (mode === 'pan') Plotly.relayout(el, { dragmode: 'pan' });
+        }
+
+        // ⭐ 一鍵清空畫面上所有的自訂線條與幾何形狀
+        function clearAllShapes() {
+            const el = document.getElementById('plotlyChartContainer');
+            if (el) {
+                Plotly.relayout(el, { shapes: [] });
+            }
         }
 
         function resetPlotlyAxes() {
@@ -589,11 +602,12 @@ HTML_CONTENT = """
             const dates = data.dates;
             const traces = [];
 
-            const isSlate = document.getElementById('bodyRoot').classList.contains('theme-slate');
-            const isPureDark = document.getElementById('bodyRoot').classList.contains('theme-dark');
-            const paperBg = isSlate ? '#1e293b' : (isPureDark ? '#0d0d0d' : '#121824');
-            const plotBg = isSlate ? '#0f172a' : (isPureDark ? '#000000' : '#0b0e14');
-            const gridCol = isSlate ? '#334155' : (isPureDark ? '#262626' : '#1e293b');
+            // 依據深淺色模式調整圖表色彩
+            const isLight = document.getElementById('bodyRoot').classList.contains('theme-light');
+            const paperBg = isLight ? '#ffffff' : '#121824';
+            const plotBg = isLight ? '#f8fafc' : '#0b0e14';
+            const gridCol = isLight ? '#e2e8f0' : '#1e293b';
+            const textCol = isLight ? '#475569' : '#94a3b8';
 
             // 1. K線
             traces.push({
@@ -639,7 +653,7 @@ HTML_CONTENT = """
             const layout = {
                 paper_bgcolor: paperBg,
                 plot_bgcolor: plotBg,
-                font: { color: '#94a3b8', family: 'sans-serif', size: 11 },
+                font: { color: textCol, family: 'sans-serif', size: 11 },
                 margin: { l: 45, r: 45, t: 15, b: 25 },
                 showlegend: false,
                 xaxis: { type: 'category', rangeslider: { visible: false }, gridcolor: gridCol, nticks: 8 },
@@ -649,7 +663,7 @@ HTML_CONTENT = """
                 yaxis4: { domain: [0.0, 0.16], gridcolor: gridCol, side: 'right', title: 'MACD' },
                 hovermode: 'x unified',
                 dragmode: 'drawline',
-                newshape: { line: { color: '#facc15', width: 2 } }
+                newshape: { line: { color: '#facc15', width: 2.5 } }
             };
 
             const config = {
@@ -783,7 +797,7 @@ HTML_CONTENT = """
             const w = canvas.width, h = canvas.height;
             const minP = strike * 0.75, maxP = strike * 1.25;
 
-            ctx.strokeStyle = '#1e293b';
+            ctx.strokeStyle = '#cbd5e1';
             ctx.beginPath();
             ctx.moveTo(0, h / 2);
             ctx.lineTo(w, h / 2);
@@ -884,7 +898,6 @@ HTML_CONTENT = """
 
         function closeLineModal() { document.getElementById('lineModal').classList.add('hidden'); }
         
-        // ⭐ 日K / 週K / 月K 切換事件
         function changeInterval(intv) {
             currentInterval = intv;
             ['1d', '1wk', '1mo'].forEach(k => {
@@ -892,7 +905,7 @@ HTML_CONTENT = """
                 if (k === intv) {
                     btn.className = "px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950 transition";
                 } else {
-                    btn.className = "px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white transition";
+                    btn.className = "px-2.5 py-0.5 rounded font-bold text-muted hover:opacity-100 transition";
                 }
             });
             fetchStockData(currentSymbol);
@@ -976,7 +989,6 @@ def run_v98_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 2
 
 @app.get("/api/quote/{symbol}")
 def get_quote_data(symbol: str, interval: str = "1d"):
-    # ⭐ 根據週期設定拉取足夠長度的歷史數據
     if interval == "1mo":
         period = "10y"
     elif interval == "1wk":
@@ -989,7 +1001,6 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     if df.empty:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    # 均線系統
     df['MA5'] = df['Close'].rolling(window=5, min_periods=1).mean()
     df['MA10'] = df['Close'].rolling(window=10, min_periods=1).mean()
     df['MA20'] = df['Close'].rolling(window=20, min_periods=1).mean()
@@ -997,15 +1008,12 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     df['MA120'] = df['Close'].rolling(window=120, min_periods=1).mean()
     df['MA240'] = df['Close'].rolling(window=240, min_periods=1).mean()
     
-    # 布林通道 (20MA +- 2*STD)
     bb_std = df['Close'].rolling(window=20, min_periods=5).std(ddof=0).fillna(0)
     df['BB_UP'] = df['MA20'] + 2.0 * bb_std
     df['BB_LOW'] = df['MA20'] - 2.0 * bb_std
 
-    # 5 週期均量
     df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=1).mean()
 
-    # KD (9, 3, 3)
     low9 = df['Low'].rolling(9, min_periods=1).min()
     high9 = df['High'].rolling(9, min_periods=1).max()
     rsv = ((df['Close'] - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
@@ -1020,7 +1028,6 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     df['K'] = k_vals
     df['D'] = d_vals
 
-    # MACD (12, 26, 9)
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['DIF'] = ema12 - ema26
