@@ -1,46 +1,156 @@
-from fastapi import FastAPI, HTTPException
+import os
+import re
+import math
+import time
+import hmac
+import threading
+import datetime
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+import pandas as pd
+import requests
+import yfinance as yf
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from scipy.stats import norm
-import requests
-import datetime
-import os
+from pydantic import BaseModel, Field
 
-app = FastAPI(title="US Professional Radar War Room - V9.8 Flagship Fully Integrated")
+try:
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+    TPE = ZoneInfo("Asia/Taipei")
+except Exception:  # 需要在 requirements.txt 加入 tzdata
+    ET = None
+    TPE = None
 
+APP_VERSION = "V9.9"
+
+app = FastAPI(title=f"US Professional Radar War Room - {APP_VERSION}")
+
+# 修正：allow_origins="*" 時不可同時 allow_credentials=True（瀏覽器會拒絕，也有安全疑慮）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_TOKEN", "").strip()
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "").strip()
+ADMIN_PUSH_PIN = os.environ.get("ADMIN_PUSH_PIN", "").strip()
+
+
+# ==============================================================================
+# 工具：快取、時區、輸入驗證
+# ==============================================================================
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def cached(key, ttl, fn, cache_empty=False):
+    """簡易 TTL 快取。失敗(例外)與空結果預設不快取，避免把 Yahoo 限流時的空資料存起來。"""
+    now = time.time()
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    val = fn()
+    if cache_empty or val:
+        with _CACHE_LOCK:
+            _CACHE[key] = (now, val)
+            if len(_CACHE) > 500:
+                for k in sorted(_CACHE, key=lambda x: _CACHE[x][0])[:100]:
+                    _CACHE.pop(k, None)
+    return val
+
+
+def _utc_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def et_now() -> datetime.datetime:
+    if ET is not None:
+        return datetime.datetime.now(ET)
+    u = _utc_now()
+    year = u.year
+    d = datetime.datetime(year, 3, 8, 7, tzinfo=datetime.timezone.utc)
+    d += datetime.timedelta(days=(6 - d.weekday()) % 7)
+    e = datetime.datetime(year, 11, 1, 6, tzinfo=datetime.timezone.utc)
+    e += datetime.timedelta(days=(6 - e.weekday()) % 7)
+    off = -4 if d <= u < e else -5
+    return u.astimezone(datetime.timezone(datetime.timedelta(hours=off)))
+
+
+def tpe_now() -> datetime.datetime:
+    if TPE is not None:
+        return datetime.datetime.now(TPE)
+    return _utc_now().astimezone(datetime.timezone(datetime.timedelta(hours=8)))
+
+
+def us_session_label() -> str:
+    n = et_now()
+    hm = n.hour * 100 + n.minute
+    if n.weekday() >= 5:
+        return "休市(週末)"
+    if 930 <= hm < 1600:
+        return "盤中"
+    if 400 <= hm < 930:
+        return "盤前"
+    if 1600 <= hm < 2000:
+        return "盤後"
+    return "休市"
+
+
+SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
+
+
+def clean_symbol(s: str) -> str:
+    sym = (s or "").strip().upper()
+    if not SYMBOL_RE.match(sym):
+        raise HTTPException(status_code=400, detail="股票代號格式不正確")
+    return sym
+
+
+def _f(x, default=0.0):
+    try:
+        v = float(x)
+        return default if (math.isnan(v) or math.isinf(v)) else v
+    except Exception:
+        return default
+
+
+# ==============================================================================
+# Black-Scholes Greeks（移除 scipy 依賴，以 math.erf 取代，部署更輕）
+# ==============================================================================
+def _ncdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _npdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
 
 def calculate_greeks(S, K, T, r, sigma, option_type="put"):
-    if T <= 0 or sigma <= 0:
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return {"delta": 0.0, "theta": 0.0, "gamma": 0.0, "vega": 0.0}
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
+    sq = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / sq
+    d2 = d1 - sq
     if option_type == "call":
-        delta = norm.cdf(d1)
-        theta = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2)) / 365
+        delta = _ncdf(d1)
+        theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * _ncdf(d2)) / 365
     else:
-        delta = norm.cdf(d1) - 1
-        theta = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * norm.cdf(-d2)) / 365
-    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    vega = S * norm.pdf(d1) * np.sqrt(T) / 100
+        delta = _ncdf(d1) - 1
+        theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * _ncdf(-d2)) / 365
+    gamma = _npdf(d1) / (S * sq)
+    vega = S * _npdf(d1) * math.sqrt(T) / 100
     return {
-        "delta": float(round(delta, 4)),
-        "theta": float(round(theta, 4)),
-        "gamma": float(round(gamma, 4)),
-        "vega": float(round(vega, 4))
+        "delta": round(delta, 4), "theta": round(theta, 4),
+        "gamma": round(gamma, 4), "vega": round(vega, 4)
     }
+
 
 MARKET_UNIVERSE = [
     {"symbol": "NVDA", "name": "輝達", "sector": "SOX", "market": "NASDAQ"},
@@ -87,1108 +197,1303 @@ MARKET_UNIVERSE = [
     {"symbol": "DIA", "name": "道瓊工業 ETF", "sector": "ETF", "market": "AMEX"},
     {"symbol": "IWM", "name": "羅素2000小型股 ETF", "sector": "ETF", "market": "AMEX"}
 ]
+UNIVERSE_SYMBOLS = [x["symbol"] for x in MARKET_UNIVERSE]
+UNIVERSE_BY_SYMBOL = {x["symbol"]: x for x in MARKET_UNIVERSE}
 
-HTML_CONTENT = """
+
+# ==============================================================================
+# 歷史資料與指標（修正：均線一律要求滿期數才有值，不再 min_periods=1 偽造年線）
+# ==============================================================================
+HISTORY_PLAN = {
+    # interval: (抓取區間, 顯示根數)；抓得比顯示長，均線才有足夠暖機資料
+    "1d": ("3y", 252),
+    "1wk": ("10y", 156),
+    "1mo": ("max", 120),
+}
+INTERVAL_UNIT = {"1d": "日", "1wk": "週", "1mo": "月"}
+
+
+def _strip_tz(df: pd.DataFrame) -> pd.DataFrame:
+    if getattr(df.index, "tz", None) is not None:
+        df = df.copy()
+        df.index = df.index.tz_localize(None)
+    return df
+
+
+def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    c = d["Close"]
+    for p in (5, 10, 20, 60, 120, 240):
+        d[f"MA{p}"] = c.rolling(p, min_periods=p).mean()
+    std20 = c.rolling(20, min_periods=20).std(ddof=0)
+    d["BB_UP"] = d["MA20"] + 2.0 * std20
+    d["BB_LOW"] = d["MA20"] - 2.0 * std20
+    d["Vol_MA5"] = d["Volume"].shift(1).rolling(5, min_periods=3).mean()
+
+    low9 = d["Low"].rolling(9, min_periods=9).min()
+    high9 = d["High"].rolling(9, min_periods=9).max()
+    rsv = ((c - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
+    k_vals, d_vals = [], []
+    k_prev, d_prev = 50.0, 50.0
+    for val in rsv.values:
+        k_cur = (2.0 / 3.0) * k_prev + (1.0 / 3.0) * float(val)
+        d_cur = (2.0 / 3.0) * d_prev + (1.0 / 3.0) * k_cur
+        k_vals.append(k_cur)
+        d_vals.append(d_cur)
+        k_prev, d_prev = k_cur, d_cur
+    d["K"] = k_vals
+    d["D"] = d_vals
+
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    d["DIF"] = ema12 - ema26
+    d["DEA"] = d["DIF"].ewm(span=9, adjust=False).mean()
+    d["MACD_HIST"] = d["DIF"] - d["DEA"]
+    return d
+
+
+def fetch_history(symbol: str, interval: str) -> pd.DataFrame:
+    period, _ = HISTORY_PLAN[interval]
+
+    def _load():
+        df = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=False)
+        if df is None or df.empty:
+            return None
+        df = _strip_tz(df.dropna(subset=["Close"]))
+        return df if not df.empty else None
+
+    return cached(("hist", symbol, interval), 120, _load)
+
+
+def calc_neckline(df: pd.DataFrame, neck_days: int, mode: str):
+    """N 根 K 棒頸線：多方=前N根最高、空方=前N根最低（不含當根）。"""
+    if len(df) < neck_days + 2:
+        return None
+    win = df.iloc[-(neck_days + 1):-1]
+    return float(win["High"].max()) if mode == "LONG" else float(win["Low"].min())
+
+
+def quality_badge(mode: str, spot: float, neck: float, ma20) -> tuple:
+    if neck is None or neck <= 0:
+        return "資料不足", 0.0
+    if mode == "LONG":
+        dist = (spot / neck - 1.0) * 100.0
+        if dist <= 0:
+            return "⏳ 尚未突破頸線", dist
+        if dist <= 5.0 and ma20 is not None and spot >= ma20:
+            return "🛡️ 距頸線 ≤ 5% 且站上月線", dist
+        return "⚠️ 乖離偏遠或月線下", dist
+    dist = (neck / spot - 1.0) * 100.0
+    if dist <= 0:
+        return "⏳ 尚未跌破頸線", dist
+    if dist <= 5.0 and ma20 is not None and spot <= ma20:
+        return "🛡️ 距跌破線 ≤ 5% 且在月線下", dist
+    return "⚠️ 跌幅已遠或仍在月線上", dist
+
+
+def _series(s: pd.Series, nd=2):
+    return [None if pd.isna(v) else round(float(v), nd) for v in s.values]
+
+
+# ==============================================================================
+# 全市場日K批次下載（一次抓完 42 檔，快取 5 分鐘；取代原本逐檔循序抓取）
+# ==============================================================================
+def _split_download(raw, symbols):
+    out = {}
+    if raw is None or raw.empty:
+        return out
+    multi = isinstance(raw.columns, pd.MultiIndex)
+    lvl0 = set(raw.columns.get_level_values(0)) if multi else set()
+    for s in symbols:
+        sub = None
+        if multi and s in lvl0:
+            sub = raw[s].copy()
+        elif (not multi) and len(symbols) == 1:
+            sub = raw.copy()
+        if sub is not None and "Close" in sub.columns:
+            sub = sub.dropna(subset=["Close"])
+            if not sub.empty:
+                out[s] = _strip_tz(sub)
+    return out
+
+
+def load_universe_daily():
+    def _load():
+        data = {}
+        for attempt in range(2):
+            try:
+                raw = yf.download(
+                    " ".join(UNIVERSE_SYMBOLS), period="6mo", group_by="ticker",
+                    threads=True, progress=False, auto_adjust=False
+                )
+                data = _split_download(raw, UNIVERSE_SYMBOLS)
+                if len(data) >= len(UNIVERSE_SYMBOLS) * 0.6:
+                    break
+            except Exception:
+                time.sleep(1.0 * (attempt + 1))
+        return data
+
+    return cached(("universe_daily",), 300, _load)
+
+
+def screen_one(df: pd.DataFrame, mode: str, neck_days: int, vol_ratio: float):
+    if df is None or len(df) < max(neck_days + 6, 25):
+        return None
+    c = float(df["Close"].iloc[-1])
+    o = float(df["Open"].iloc[-1])
+    prev_c = float(df["Close"].iloc[-2])
+    v = float(df["Volume"].iloc[-1])
+    ma20 = df["Close"].rolling(20, min_periods=20).mean().iloc[-1]
+    vma5 = df["Volume"].shift(1).rolling(5, min_periods=3).mean().iloc[-1]
+    if pd.isna(ma20) or pd.isna(vma5) or vma5 <= 0:
+        return None
+    ratio = v / float(vma5)
+    win = df.iloc[-(neck_days + 1):-1]
+    prev_win = df.iloc[-(neck_days + 2):-2]
+    if mode == "LONG":
+        neck = float(win["High"].max())
+        prev_neck = float(prev_win["High"].max())
+        ok = c > neck and c > o and c > float(ma20) and ratio >= vol_ratio
+        dist = (c / neck - 1.0) * 100.0
+        first_day = prev_c <= prev_neck
+    else:
+        neck = float(win["Low"].min())
+        prev_neck = float(prev_win["Low"].min())
+        ok = c < neck and c < o and c < float(ma20) and ratio >= vol_ratio
+        dist = (neck / c - 1.0) * 100.0
+        first_day = prev_c >= prev_neck
+    if not ok:
+        return None
+    return {
+        "price": round(c, 2),
+        "pct": round((c / prev_c - 1.0) * 100.0, 2),
+        "dist_neck_pct": round(dist, 1),
+        "v_ratio": round(ratio, 1),
+        "first_day": bool(first_day),
+        "last_date": df.index[-1].strftime("%Y-%m-%d"),
+    }
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True, "version": APP_VERSION}
+
+
+@app.get("/api/market/indices")
+def get_indices():
+    def _load():
+        indices_map = {"dji": "^DJI", "ixic": "^IXIC", "sox": "^SOX", "spx": "^GSPC", "vix": "^VIX"}
+
+        def _one(item):
+            k, sym = item
+            try:
+                df = yf.Ticker(sym).history(period="7d")
+                df = df.dropna(subset=["Close"])
+                c = float(df["Close"].iloc[-1])
+                prev_c = float(df["Close"].iloc[-2])
+                chg = round(c - prev_c, 2)
+                pct = round(chg / prev_c * 100.0, 2)
+                if k == "vix":
+                    if c >= 30:
+                        status = "極度恐慌"
+                    elif c >= 20:
+                        status = "恐慌警戒"
+                    elif c >= 15:
+                        status = "正常平穩"
+                    else:
+                        status = "樂觀偏低"
+                    return k, {"close": round(c, 2), "chg": chg, "pct": pct, "status": status}
+                return k, {"close": int(round(c)), "chg": chg, "pct": pct}
+            except Exception:
+                return k, None
+
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            res = dict(ex.map(_one, indices_map.items()))
+        return res
+
+    res = cached(("indices",), 60, _load)
+    out = {k: (v if v else {"close": 0, "chg": 0.0, "pct": 0.0, "status": "—"}) for k, v in (res or {}).items()}
+    for k in ("dji", "ixic", "sox", "spx", "vix"):
+        out.setdefault(k, {"close": 0, "chg": 0.0, "pct": 0.0, "status": "—"})
+    out["session"] = us_session_label()
+    out["et_time"] = et_now().strftime("%m/%d %H:%M")
+    return out
+
+
+@app.get("/api/screener")
+def run_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, vol_ratio: float = 1.2):
+    mode = "SHORT" if mode == "SHORT" else "LONG"
+    neck_days = max(5, min(60, int(neck_days)))
+    vol_ratio = max(1.0, min(5.0, float(vol_ratio)))
+    pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
+
+    data = load_universe_daily()
+    results, failed = [], 0
+    for item in pool:
+        df = data.get(item["symbol"])
+        if df is None:
+            failed += 1
+            continue
+        r = screen_one(df, mode, neck_days, vol_ratio)
+        if r is None:
+            continue
+        r.update({
+            "symbol": item["symbol"], "name": item["name"], "sector": item["sector"],
+            "score": ("🔥 暴量突破" if r["v_ratio"] >= 2.0 else "📈 放量突破") if mode == "LONG"
+            else ("⚡ 暴量破底" if r["v_ratio"] >= 2.0 else "📉 破底轉弱"),
+        })
+        results.append(r)
+    results.sort(key=lambda x: x["v_ratio"], reverse=True)
+    session = us_session_label()
+    return {
+        "screener_list": results,
+        "scanned": len(pool) - failed,
+        "failed": failed,
+        "partial_volume": session == "盤中",
+        "session": session,
+    }
+
+
+def _name_for(symbol: str):
+    if symbol in UNIVERSE_BY_SYMBOL:
+        it = UNIVERSE_BY_SYMBOL[symbol]
+        return it["name"], it["market"]
+
+    def _load():
+        try:
+            info = yf.Ticker(symbol).info
+            return info.get("shortName") or info.get("longName") or symbol, info.get("exchange", "US")
+        except Exception:
+            return None
+
+    got = cached(("name", symbol), 86400, _load)
+    return got if got else (symbol, "US")
+
+
+@app.get("/api/quote/{symbol}")
+def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_days: int = 20):
+    sym = clean_symbol(symbol)
+    if interval not in HISTORY_PLAN:
+        interval = "1d"
+    mode = "SHORT" if mode == "SHORT" else "LONG"
+    neck_days = max(5, min(60, int(neck_days)))
+
+    raw = fetch_history(sym, interval)
+    if raw is None or len(raw) < 3:
+        raise HTTPException(status_code=404, detail="查無此代號或暫時無法取得資料（Yahoo 可能限流，請稍後再試）")
+
+    df = add_indicators(raw)
+    spot = round(float(df["Close"].iloc[-1]), 2)
+    prev_spot = round(float(df["Close"].iloc[-2]), 2)
+    chg = round(spot - prev_spot, 2)
+    pct = round(chg / prev_spot * 100.0, 2) if prev_spot > 0 else 0.0
+
+    ma20_last = df["MA20"].iloc[-1]
+    ma240_last = df["MA240"].iloc[-1]
+    ma20_val = None if pd.isna(ma20_last) else round(float(ma20_last), 2)
+    ma240_val = None if pd.isna(ma240_last) else round(float(ma240_last), 2)
+
+    neck = calc_neckline(df, neck_days, mode)
+    badge, dist = quality_badge(mode, spot, neck, ma20_val)
+
+    _, show_n = HISTORY_PLAN[interval]
+    v = df.tail(show_n)
+    name_str, exchange_str = _name_for(sym)
+
+    return {
+        "symbol": sym, "name": name_str, "exchange": exchange_str,
+        "interval": interval, "mode": mode,
+        "spot": spot, "chg": chg, "pct": pct,
+        "last_date": df.index[-1].strftime("%Y-%m-%d"),
+        "ma20_val": ma20_val if ma20_val is not None else spot,
+        "ma240_val": ma240_val,
+        "neckline": round(neck, 2) if neck is not None else None,
+        "neck_days": neck_days, "neck_unit": INTERVAL_UNIT[interval],
+        "dist_neck": round(dist, 1),
+        "quality_badge": badge,
+        "dates": [d.strftime("%Y-%m-%d") for d in v.index],
+        "opens": _series(v["Open"]), "highs": _series(v["High"]),
+        "lows": _series(v["Low"]), "closes": _series(v["Close"]),
+        "volumes": [int(x) for x in v["Volume"].fillna(0).values],
+        "ma5": _series(v["MA5"]), "ma10": _series(v["MA10"]), "ma20": _series(v["MA20"]),
+        "ma60": _series(v["MA60"]), "ma120": _series(v["MA120"]), "ma240": _series(v["MA240"]),
+        "bb_up": _series(v["BB_UP"]), "bb_low": _series(v["BB_LOW"]),
+        "vol_ma5": _series(v["Vol_MA5"], 0),
+        "k": _series(v["K"], 1), "d": _series(v["D"], 1),
+        "macd_hist": _series(v["MACD_HIST"]), "macd_dif": _series(v["DIF"]), "macd_dea": _series(v["DEA"]),
+    }
+
+
+@app.get("/api/earnings/{symbol}")
+def get_next_earnings(symbol: str):
+    """下一個財報日：賣方策略（Short Put / Covered Call）最需要避開的事件風險。"""
+    sym = clean_symbol(symbol)
+
+    def _load():
+        try:
+            cal = yf.Ticker(sym).calendar
+            dates = None
+            if isinstance(cal, dict):
+                dates = cal.get("Earnings Date")
+            elif isinstance(cal, pd.DataFrame) and "Earnings Date" in cal.index:
+                dates = list(cal.loc["Earnings Date"].values)
+            if not dates:
+                return {"date": None}
+            if not isinstance(dates, (list, tuple, np.ndarray)):
+                dates = [dates]
+            today = et_now().date()
+            for d in dates:
+                dd = pd.Timestamp(d).date()
+                if dd >= today:
+                    return {"date": dd.isoformat()}
+            return {"date": None}
+        except Exception:
+            return {"date": None}
+
+    return cached(("earn", sym), 6 * 3600, _load, cache_empty=True)
+
+
+# ==============================================================================
+# 選擇權：改為「先取到期日、選了再取該到期日合約」，不再一次抓全部到期日
+# ==============================================================================
+def _expirations(sym: str):
+    def _load():
+        try:
+            return list(yf.Ticker(sym).options or [])
+        except Exception:
+            return []
+    return cached(("exps", sym), 600, _load)
+
+
+@app.get("/api/options/{symbol}")
+def get_option_expirations(symbol: str):
+    sym = clean_symbol(symbol)
+    exps = _expirations(sym)
+    if not exps:
+        return {"expirations": [], "error": "此標的無期權，或 Yahoo 暫時限流／非交易時段無報價"}
+    return {"expirations": exps[:14]}
+
+
+@app.get("/api/options/{symbol}/chain")
+def get_option_chain(symbol: str, exp: str, spot: float = 0.0):
+    sym = clean_symbol(symbol)
+    if exp not in (_expirations(sym) or []):
+        raise HTTPException(status_code=400, detail="到期日不在此標的的合約清單內")
+
+    def _load():
+        oc = yf.Ticker(sym).option_chain(exp)
+
+        def _rows(frame):
+            rows = []
+            for _, r in frame.iterrows():
+                k = _f(r.get("strike"))
+                if spot > 0 and not (spot * 0.6 <= k <= spot * 1.4):
+                    continue
+                bid, ask, last = _f(r.get("bid")), _f(r.get("ask")), _f(r.get("lastPrice"))
+                rows.append({
+                    "strike": k, "bid": bid, "ask": ask, "last": last,
+                    "impliedVolatility": _f(r.get("impliedVolatility"), 0.0),
+                    "volume": int(_f(r.get("volume"))), "openInterest": int(_f(r.get("openInterest"))),
+                })
+            return rows
+
+        return {"puts": _rows(oc.puts), "calls": _rows(oc.calls)}
+
+    data = cached(("chain", sym, exp, round(spot, 0)), 120, _load)
+    if not data or (not data["puts"] and not data["calls"]):
+        raise HTTPException(status_code=502, detail="取得期權鏈失敗（Yahoo 可能限流），請稍後按重試")
+    return data
+
+
+@app.get("/api/greeks")
+def get_greeks(S: float, K: float, T: float, sigma: float, type: str = "put"):
+    if not (0 < S < 1e6 and 0 < K < 1e6 and 0 < T < 5 and 0 < sigma < 5):
+        raise HTTPException(status_code=400, detail="參數超出範圍")
+    return calculate_greeks(S, K, T, 0.045, sigma, "call" if type == "call" else "put")
+
+
+# ==============================================================================
+# LINE 推播：加入 PIN 驗證與冷卻；回傳真實 LINE 狀態
+# ==============================================================================
+STRATEGY_NAMES = {
+    "csp": "Short Put (低接收租)", "cc": "Covered Call (現股包租公)",
+    "bull_put": "Bull Put Spread", "long_call": "Long Call", "long_put": "Long Put",
+    "bull_call": "Bull Call Spread", "bear_put": "Bear Put Spread", "straddle": "Long Straddle",
+}
+_PUSH_LOCK = threading.Lock()
+_PUSH_STATE = {"last": 0.0, "fails": 0, "lock_until": 0.0}
+
+
+class PushPayload(BaseModel):
+    symbol: str = Field(default="SPY", max_length=12)
+    strategy: str = Field(default="csp", max_length=20)
+    mode: str = Field(default="LONG", max_length=5)
+    neck_days: int = Field(default=20, ge=5, le=60)
+    summary: str = Field(default="", max_length=500)
+
+
+@app.post("/api/line/push")
+def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
+    if not ADMIN_PUSH_PIN:
+        raise HTTPException(status_code=403, detail="伺服器尚未設定 ADMIN_PUSH_PIN，推播功能已停用")
+    now = time.time()
+    with _PUSH_LOCK:
+        if now < _PUSH_STATE["lock_until"]:
+            raise HTTPException(status_code=429, detail=f"錯誤次數過多，請 {int(_PUSH_STATE['lock_until'] - now)} 秒後再試")
+        if not hmac.compare_digest(x_push_pin.encode("utf-8"), ADMIN_PUSH_PIN.encode("utf-8")):
+            _PUSH_STATE["fails"] += 1
+            if _PUSH_STATE["fails"] >= 5:
+                _PUSH_STATE["lock_until"] = now + 300
+                _PUSH_STATE["fails"] = 0
+            raise HTTPException(status_code=401, detail="通行碼錯誤")
+        _PUSH_STATE["fails"] = 0
+        if now - _PUSH_STATE["last"] < 30:
+            raise HTTPException(status_code=429, detail="請等待 30 秒後再推播")
+        _PUSH_STATE["last"] = now
+
+    sym = clean_symbol(payload.symbol)
+    mode = "SHORT" if payload.mode == "SHORT" else "LONG"
+    raw = fetch_history(sym, "1d")
+    if raw is None or len(raw) < 25:
+        raise HTTPException(status_code=502, detail="取得行情失敗，未推播")
+    df = add_indicators(raw)
+    spot = float(df["Close"].iloc[-1])
+    prev = float(df["Close"].iloc[-2])
+    pct = (spot / prev - 1.0) * 100.0
+    ma20 = float(df["MA20"].iloc[-1])
+    neck = calc_neckline(df, payload.neck_days, mode)
+    badge, dist = quality_badge(mode, spot, neck, ma20)
+    arrow = "▲" if pct >= 0 else "▼"
+    support = ("月線之上" if spot >= ma20 else "月線之下")
+    summary = re.sub(r"[\r\x00-\x08]", "", payload.summary).strip()
+
+    text = (
+        f"📈【美股多空雷達 {APP_VERSION}｜個股戰報】\n"
+        f"🕒 {tpe_now().strftime('%Y-%m-%d %H:%M')} (台北) / {et_now().strftime('%H:%M')} (美東)\n"
+        f"🌡️ {sym} 現價 ${spot:.2f} ({arrow}{abs(pct):.2f}%)\n"
+        f"📏 距{payload.neck_days}日{'頸線' if mode == 'LONG' else '跌破線'} (${neck:.2f})：{dist:+.1f}%\n"
+        f"🧭 月線 MA20 ${ma20:.2f}（現價在{support}）\n"
+        f"🛡️ 品質：{badge}\n"
+        f"⚡ 策略：{STRATEGY_NAMES.get(payload.strategy, payload.strategy)}\n"
+        + (f"🧮 {summary}\n" if summary else "")
+        + "━━━━━━━━━━━━━━\n※ 僅為量化條件篩選結果，非投資建議。"
+    )
+
+    line_status = "not_configured"
+    if LINE_CHANNEL_ACCESS_TOKEN and LINE_USER_ID:
+        try:
+            r = requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"},
+                json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": text}]},
+                timeout=8,
+            )
+            line_status = str(r.status_code)
+        except Exception as e:
+            line_status = f"error:{type(e).__name__}"
+    ok = line_status == "200"
+    return {"status": "success" if ok else "failed", "line_status": line_status, "preview_text": text}
+
+
+# ==============================================================================
+# 前端（單頁）。V9.9：選擇權逐腿計價、Plotly Payoff、畫線保留、偏好記憶、錯誤可見
+# ==============================================================================
+HTML_CONTENT = r"""
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>美股多空雷達戰情室 V9.8 旗艦完全體</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-    <style>
-        :root {
-            --bg-main: #0b0e14;
-            --bg-card: #121824;
-            --border-col: #1e293b;
-            --text-main: #e2e8f0;
-            --text-muted: #94a3b8;
-            --input-bg: #0b0e14;
-        }
-        /* 柔和淺色模式（溫和米灰，老花友善不刺眼） */
-        .theme-light {
-            --bg-main: #f1f5f9;
-            --bg-card: #ffffff;
-            --border-col: #cbd5e1;
-            --text-main: #0f172a;
-            --text-muted: #475569;
-            --input-bg: #f8fafc;
-        }
-        body { background-color: var(--bg-main); color: var(--text-main); }
-        .bg-card { background-color: var(--bg-card); }
-        .border-theme { border-color: var(--border-col); }
-        .text-muted { color: var(--text-muted); }
-        .bg-input { background-color: var(--input-bg); }
-
-        @media (max-width: 1024px) {
-            #mainLayout { flex-direction: column !important; height: auto !important; overflow-y: auto !important; }
-            #leftSidebar, #rightSidebar, #centerMain { width: 100% !important; height: auto !important; border: none !important; border-bottom: 1px solid var(--border-col) !important; }
-            #centerMain { order: 1 !important; }
-            #rightSidebar { order: 2 !important; }
-            #leftSidebar { order: 3 !important; max-height: 480px !important; }
-            .grid-indices { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-            .grid-indices > div:last-child { grid-column: span 2 / span 2 !important; }
-            body { overflow-y: auto !important; height: auto !important; }
-        }
-        .pill-active { background-color: #234E70 !important; color: #ffffff !important; border-color: #38bdf8 !important; font-weight: 700 !important; }
-        .pill-inactive { background-color: var(--bg-card) !important; color: #64748b !important; border-color: var(--border-col) !important; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>美股多空雷達戰情室 V9.9</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+:root{--bg-main:#0b0e14;--bg-card:#121824;--border-col:#1e293b;--text-main:#e2e8f0;--text-muted:#94a3b8;--input-bg:#0b0e14;}
+.theme-light{--bg-main:#f1f5f9;--bg-card:#ffffff;--border-col:#cbd5e1;--text-main:#0f172a;--text-muted:#475569;--input-bg:#f8fafc;}
+body{background-color:var(--bg-main);color:var(--text-main);}
+.bg-card{background-color:var(--bg-card);} .border-theme{border-color:var(--border-col);}
+.text-muted{color:var(--text-muted);} .bg-input{background-color:var(--input-bg);}
+@media (max-width:1024px){
+ #mainLayout{flex-direction:column!important;height:auto!important;overflow-y:auto!important;}
+ #leftSidebar,#rightSidebar,#centerMain{width:100%!important;height:auto!important;border:none!important;border-bottom:1px solid var(--border-col)!important;}
+ #centerMain{order:1!important;} #rightSidebar{order:2!important;} #leftSidebar{order:3!important;max-height:480px!important;}
+ .grid-indices{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+ .grid-indices>div:last-child{grid-column:span 2/span 2!important;}
+ body{overflow-y:auto!important;height:auto!important;}
+}
+.pill-active{background-color:#234E70!important;color:#fff!important;font-weight:700!important;}
+.pill-inactive{background-color:var(--bg-card)!important;color:#64748b!important;}
+select,input{color:var(--text-main);}
+.tool-btn{padding:2px 8px;border-radius:6px;border:1px solid var(--border-col);background:var(--input-bg);font-weight:700;}
+</style>
 </head>
 <body id="bodyRoot" class="font-sans antialiased min-h-screen flex flex-col">
-    <!-- 頂部看板 -->
-    <header class="bg-card border-b border-theme px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
-        <div class="flex justify-between items-center">
-            <div class="flex items-center space-x-2">
-                <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8</span>
-                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">旗艦完全體</span>
-                <button onclick="toggleSettingsDrawer()" class="text-xs bg-card hover:opacity-80 px-2.5 py-0.5 rounded border border-theme transition font-bold">⚙️ 設定 (外觀/字體)</button>
-                <button onclick="openChangeLogModal()" class="text-xs bg-card hover:opacity-80 text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 transition font-bold">📜 改版紀錄</button>
-            </div>
-            <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold shrink-0">🔄 刷新溫度計</button>
+<header class="bg-card border-b border-theme px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
+  <div class="flex justify-between items-center flex-wrap gap-2">
+    <div class="flex items-center flex-wrap gap-2">
+      <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider">⚡ 美股多空雷達 V9.9</span>
+      <span class="text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">風控強化版</span>
+      <span id="sessionTag" class="text-xs px-2 py-0.5 rounded-full border border-theme font-bold text-muted">--</span>
+      <button onclick="toggleSettingsDrawer()" class="text-xs bg-card px-2.5 py-0.5 rounded border border-theme font-bold">⚙️ 設定</button>
+      <button onclick="openChangeLogModal()" class="text-xs bg-card text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 font-bold">📜 改版紀錄</button>
+    </div>
+    <button onclick="fetchIndicesData()" class="bg-[#1e293b] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold">🔄 刷新溫度計</button>
+  </div>
+  <div class="grid grid-cols-5 grid-indices gap-1.5 text-sm font-mono">
+    <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-muted font-bold">🏛️ 道瓊</span><span id="idx_dji" class="font-bold">--</span></div>
+    <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-muted font-bold">💻 那指</span><span id="idx_ixic" class="font-bold">--</span></div>
+    <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-muted font-bold">⚡ 費半</span><span id="idx_sox" class="font-bold">--</span></div>
+    <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-muted font-bold">📊 標普</span><span id="idx_spx" class="font-bold">--</span></div>
+    <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-amber-500 font-bold">🔥 恐慌</span><span id="idx_vix" class="font-bold text-amber-500">--</span></div>
+  </div>
+  <div id="statusBar" class="hidden text-xs px-2 py-1 rounded border"></div>
+  <div id="settingsDrawer" class="hidden bg-input border border-theme rounded-lg p-3 mt-1.5 text-sm space-y-3">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-theme pb-2">
+      <div class="flex items-center gap-3">
+        <span class="font-bold">🎨 主題：</span>
+        <label class="cursor-pointer flex items-center gap-1.5"><input type="radio" name="themeRadio" value="dark" checked onchange="switchTheme('dark')"><span class="font-bold">深色</span></label>
+        <label class="cursor-pointer flex items-center gap-1.5"><input type="radio" name="themeRadio" value="light" onchange="switchTheme('light')"><span class="font-bold text-amber-500">淺色(護眼米灰)</span></label>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="font-bold">👓 字體：</span>
+        <button onclick="setFontSize('normal')" id="btn_font_normal" class="px-2.5 py-1 rounded bg-card border border-theme">標準</button>
+        <button onclick="setFontSize('large')" id="btn_font_large" class="px-2.5 py-1 rounded bg-card border border-theme">大字(推薦)</button>
+        <button onclick="setFontSize('xlarge')" id="btn_font_xlarge" class="px-2.5 py-1 rounded bg-card border border-theme">特大字</button>
+      </div>
+    </div>
+    <div class="flex flex-wrap items-center gap-4 text-muted">
+      <div class="flex items-center gap-2"><span>頸線天數 (N)：</span>
+        <input type="number" id="cfg_neckDays" value="20" min="5" max="60" class="w-16 bg-card border border-theme rounded px-1.5 py-0.5 text-center" onchange="onParamChange()"></div>
+      <div class="flex items-center gap-2"><span>5日均量倍數：</span>
+        <input type="number" id="cfg_volRatio" value="1.2" step="0.1" min="1.0" max="5.0" class="w-16 bg-card border border-theme rounded px-1.5 py-0.5 text-center" onchange="onParamChange()"></div>
+      <span>※ 頸線天數同時套用於左側篩選與中間 K 線圖</span>
+    </div>
+  </div>
+</header>
+
+<div id="mainLayout" class="flex flex-1 overflow-hidden">
+  <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
+    <div class="p-3 border-b border-theme space-y-2">
+      <div>
+        <label class="text-xs text-muted font-bold block mb-1">🎯 選股多空方向：</label>
+        <div class="grid grid-cols-2 gap-1.5">
+          <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#C0392B] text-white">📈 多方突破</button>
+          <button onclick="setRadarMode('SHORT')" id="mode_short" class="py-1 rounded text-xs font-bold bg-input text-muted">📉 空方破底</button>
         </div>
+      </div>
+      <div>
+        <label class="text-xs text-muted font-bold block mb-1">🏛️ 市場板塊：</label>
+        <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-input border border-theme rounded px-2.5 py-1.5 text-sm text-[#38bdf8] font-bold">
+          <option value="ALL">🌐 全市場精選大池</option>
+          <option value="SOX">⚡ 費城半導體 (SOX)</option>
+          <option value="NASDAQ">💻 那斯達克 100</option>
+          <option value="DOW">🏛️ 道瓊工業 30</option>
+          <option value="NYSE">💼 紐約證交所主力</option>
+          <option value="ETF">📊 主力 ETF</option>
+        </select>
+      </div>
+      <div class="flex gap-2">
+        <input id="customSymbol" type="text" placeholder="任意美股代號 (NVDA, IONQ...)" class="flex-1 bg-input border border-theme rounded px-3 py-1.5 text-sm uppercase" onkeydown="if(event.key==='Enter')addCustomSymbol()">
+        <button onclick="addCustomSymbol()" class="bg-[#38bdf8] text-slate-950 font-black px-3 py-1.5 rounded text-sm">診斷</button>
+      </div>
+      <div id="screenerNote" class="text-xs text-muted"></div>
+    </div>
+    <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
+  </aside>
 
-        <div class="grid grid-cols-5 grid-indices gap-1.5 text-xs font-mono">
-            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-muted font-bold">🏛️ 道瓊</span><span id="idx_dji" class="font-bold">--</span>
-            </div>
-            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-muted font-bold">💻 那指</span><span id="idx_ixic" class="font-bold">--</span>
-            </div>
-            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-muted font-bold">⚡ 費半</span><span id="idx_sox" class="font-bold">--</span>
-            </div>
-            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-muted font-bold">📊 標普</span><span id="idx_spx" class="font-bold">--</span>
-            </div>
-            <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center">
-                <span class="text-amber-500 font-bold">🔥 恐慌</span><span id="idx_vix" class="font-bold text-amber-500">--</span>
-            </div>
+  <main id="centerMain" class="flex-1 flex flex-col p-3 overflow-y-auto">
+    <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h1 id="chartTitle" class="text-base md:text-xl font-black tracking-wide">載入中...</h1>
+        <div class="flex bg-card border border-theme rounded p-0.5 gap-1 text-xs">
+          <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
+          <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-muted">週K</button>
+          <button onclick="changeInterval('1mo')" id="btn_1mo" class="px-2.5 py-0.5 rounded font-bold text-muted">月K</button>
         </div>
-
-        <!-- ⚙️ 可收合設定抽屜 (深色/淺色柔和 ＋ 老花友善字體切換) -->
-        <div id="settingsDrawer" class="hidden bg-input border border-theme rounded-lg p-3 mt-1.5 text-xs space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-theme pb-2">
-                <div class="flex items-center space-x-3">
-                    <span class="font-bold">🎨 主題配色：</span>
-                    <label class="cursor-pointer flex items-center space-x-1.5">
-                        <input type="radio" name="themeRadio" value="dark" checked onchange="switchTheme('dark')">
-                        <span class="font-bold">深色模式 (極夜黑)</span>
-                    </label>
-                    <label class="cursor-pointer flex items-center space-x-1.5">
-                        <input type="radio" name="themeRadio" value="light" onchange="switchTheme('light')">
-                        <span class="font-bold text-amber-500">淺色模式 (柔和護眼米灰)</span>
-                    </label>
-                </div>
-                <div class="flex items-center space-x-2">
-                    <span class="font-bold">👓 老花友善字體：</span>
-                    <button onclick="setFontSize('normal')" id="btn_font_normal" class="px-2.5 py-1 rounded bg-card border border-[#38bdf8] font-bold">標準</button>
-                    <button onclick="setFontSize('large')" id="btn_font_large" class="px-2.5 py-1 rounded bg-card border border-theme">大字 (推薦)</button>
-                    <button onclick="setFontSize('xlarge')" id="btn_font_xlarge" class="px-2.5 py-1 rounded bg-card border border-theme">特大字</button>
-                </div>
-            </div>
-            <div class="flex flex-wrap items-center gap-4 text-muted">
-                <div class="flex items-center space-x-2">
-                    <span>頸線天數 (N日)：</span>
-                    <input type="number" id="cfg_neckDays" value="20" min="5" max="60" class="w-14 bg-card border border-theme rounded px-1.5 py-0.5 text-center text-white" onchange="loadScreenerList()">
-                </div>
-                <div class="flex items-center space-x-2">
-                    <span>5日均量倍數 (量比)：</span>
-                    <input type="number" id="cfg_volRatio" value="1.2" step="0.1" min="1.0" max="3.0" class="w-16 bg-card border border-theme rounded px-1.5 py-0.5 text-center text-white" onchange="loadScreenerList()">
-                </div>
-                <span>※ 修改參數後左側篩選清單將即時重新計算過濾</span>
-            </div>
-        </div>
-    </header>
-
-    <!-- 主體區域 -->
-    <div id="mainLayout" class="flex flex-1 overflow-hidden">
-        <!-- 左側：多空實質篩選 ＋ 板塊分類 ＋ 股票清單 -->
-        <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
-            <div class="p-3 border-b border-theme space-y-2">
-                <div>
-                    <label class="text-[11px] text-muted font-bold block mb-1">🎯 選股多空方向：</label>
-                    <div class="grid grid-cols-2 gap-1.5">
-                        <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#C0392B] text-white transition">📈 多方突破(創高)</button>
-                        <button onclick="setRadarMode('SHORT')" id="mode_short" class="py-1 rounded text-xs font-bold bg-input text-muted hover:text-white transition">📉 空方破底(避險)</button>
-                    </div>
-                </div>
-
-                <div>
-                    <label class="text-[11px] text-muted font-bold block mb-1">🏛️ 市場板塊大池：</label>
-                    <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-input border border-theme rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
-                        <option value="ALL">🌐 全市場精選大池 (全部標的)</option>
-                        <option value="SOX">⚡ 費城半導體 (SOX / 晶片軍火)</option>
-                        <option value="NASDAQ">💻 那斯達克 100 (科技核心主力)</option>
-                        <option value="DOW">🏛️ 道瓊工業 30 (傳統藍籌防守)</option>
-                        <option value="NYSE">💼 紐約證交所主力 (金融/能源/國防)</option>
-                        <option value="ETF">📊 全美主力 ETF (標普/公債/黃金)</option>
-                    </select>
-                </div>
-
-                <div class="flex gap-2">
-                    <input id="customSymbol" type="text" placeholder="全美股代號 (例: NVDA, IONQ, BABA)" class="flex-1 bg-input border border-theme rounded px-3 py-1.5 text-xs uppercase focus:outline-none focus:border-[#38bdf8]">
-                    <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-xs transition">穿透診斷</button>
-                </div>
-            </div>
-            <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
-        </aside>
-
-        <!-- 中間：圖表區域 -->
-        <main id="centerMain" class="flex-1 flex flex-col p-3 overflow-y-auto">
-            <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
-                <div class="flex items-center space-x-2">
-                    <h1 id="chartTitle" class="text-base md:text-xl font-black tracking-wide">載入中...</h1>
-                    <div class="flex bg-card border border-theme rounded p-0.5 space-x-1 text-xs">
-                        <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950 transition">日K</button>
-                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-muted hover:opacity-100 transition">週K</button>
-                        <button onclick="changeInterval('1mo')" id="btn_1mo" class="px-2.5 py-0.5 rounded font-bold text-muted hover:opacity-100 transition">月K</button>
-                    </div>
-                </div>
-                <div class="flex items-center space-x-2">
-                    <div id="qualityTag" class="text-[10px] md:text-xs bg-emerald-500/20 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">
-                        🛡️ 距頸線 ≤ 5%
-                    </div>
-                    <div id="currentPriceTag" class="text-sm md:text-base font-bold bg-card px-3 py-1 rounded-lg border border-theme shadow">
-                        收盤: $-- (--%)
-                    </div>
-                </div>
-            </div>
-
-            <!-- 1. 均線開關膠囊列 -->
-            <div class="flex flex-wrap items-center gap-1.5 mb-1.5 text-xs">
-                <span class="text-muted font-bold mr-1">📐 均線/指標:</span>
-                <button onclick="toggleIndicator('ma5')" id="pill_ma5" class="pill-active px-2 py-0.5 rounded border border-[#D97706] text-[#D97706] text-[11px] transition">5MA(橘)</button>
-                <button onclick="toggleIndicator('ma10')" id="pill_ma10" class="pill-inactive px-2 py-0.5 rounded border border-[#2563EB] text-[#2563EB] text-[11px] transition">10MA(藍)</button>
-                <button onclick="toggleIndicator('ma20')" id="pill_ma20" class="pill-active px-2 py-0.5 rounded border border-[#7C3AED] text-[#7C3AED] text-[11px] transition">20MA(紫)</button>
-                <button onclick="toggleIndicator('ma60')" id="pill_ma60" class="pill-active px-2 py-0.5 rounded border border-[#0D9488] text-[#0D9488] text-[11px] transition">60MA(綠)</button>
-                <button onclick="toggleIndicator('ma120')" id="pill_ma120" class="pill-active px-2 py-0.5 rounded border border-[#DB2777] text-[#DB2777] text-[11px] transition">120MA(桃)</button>
-                <button onclick="toggleIndicator('ma240')" id="pill_ma240" class="pill-active px-2 py-0.5 rounded border border-[#64748b] text-[#cbd5e1] text-[11px] transition">240MA(年線)</button>
-                <button onclick="toggleIndicator('bb')" id="pill_bb" class="pill-inactive px-2 py-0.5 rounded border border-[#64748b] text-muted text-[11px] transition">布林通道</button>
-                <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309] text-[#B45309] text-[11px] transition">20日頸線</button>
-            </div>
-
-            <!-- 2. 居中繁體中文畫線工具列（支援畫直線、方框、圓形，修復橡皮擦與一鍵清空） -->
-            <div class="flex flex-wrap justify-center items-center bg-card border border-theme py-1.5 px-3 rounded-lg text-xs mb-2 gap-2 shadow">
-                <span class="font-bold text-[#38bdf8] mr-1">🛠️ 中文畫線工具:</span>
-                <button onclick="setPlotlyMode('drawline')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition font-bold" title="拖曳畫出趨勢線或水平支撐壓力線">📏 畫直線(趨勢/壓力)</button>
-                <button onclick="setPlotlyMode('drawrect')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition font-bold" title="畫盤整箱型區間">📦 畫方框(盤整箱)</button>
-                <button onclick="setPlotlyMode('drawcircle')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition font-bold" title="標記轉折圓圈">⭕ 畫圓形</button>
-                
-                <span class="text-muted">|</span>
-                <!-- 修復後的橡皮擦與直接一鍵清空按鈕 -->
-                <button onclick="setPlotlyMode('eraseshape')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-red-500/50 text-red-500 transition font-bold" title="滑鼠點擊畫線即可刪除">🧹 點選刪除單條</button>
-                <button onclick="clearAllShapes()" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-red-500 text-red-500 transition font-bold" title="清空畫面上所有的自訂線條與圖形">🗑️ 一鍵清空所有畫線</button>
-                
-                <span class="text-muted">|</span>
-                <button onclick="setPlotlyMode('zoom')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition">🔍 框選放大</button>
-                <button onclick="setPlotlyMode('pan')" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition">✋ 拖曳平移</button>
-                <button onclick="resetPlotlyAxes()" class="hover:opacity-80 px-2 py-0.5 bg-input rounded border border-theme transition">🏠 還原初始</button>
-            </div>
-
-            <!-- 3. Plotly 原生 4 層圖表容器 -->
-            <div id="plotlyChartContainer" class="bg-card border border-theme rounded-xl p-2 w-full h-[600px] md:h-[660px]"></div>
-        </main>
-
-        <!-- 右側：八大選擇權策略風控與 LINE 推播 -->
-        <aside id="rightSidebar" class="w-96 bg-card border-l border-theme flex flex-col p-4 shrink-0">
-            <h2 class="text-sm font-black mb-2.5 flex items-center justify-between">
-                <span>📊 選擇權全市場策略風控</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">真實市場數據直通</span>
-            </h2>
-
-            <div class="space-y-2.5 text-xs">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <div>
-                        <label class="text-muted block mb-1">到期日</label>
-                        <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-input border border-theme rounded p-2 font-bold focus:outline-none focus:border-[#38bdf8]">
-                            <option value="">載入中...</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="text-muted block mb-1">策略類型 (8大主流)</label>
-                        <select id="strategySelect" onchange="onExpirationChange()" class="w-full bg-input border border-theme rounded p-2 font-bold focus:outline-none focus:border-[#38bdf8]">
-                            <optgroup label="💰 賣方穩健收租">
-                                <option value="csp" selected>Short Put (低接收租)</option>
-                                <option value="cc">Covered Call (現股包租公)</option>
-                                <option value="bull_put">Bull Put Spread (賣權多頭價差)</option>
-                            </optgroup>
-                            <optgroup label="🚀 買方方向波段">
-                                <option value="long_call">Long Call (大波段看漲)</option>
-                                <option value="long_put">Long Put (看跌 / 現股避險)</option>
-                                <option value="bull_call">Bull Call Spread (買權多頭價差)</option>
-                                <option value="bear_put">Bear Put Spread (賣權空頭價差)</option>
-                            </optgroup>
-                            <optgroup label="⚡ 波動度交易">
-                                <option value="straddle">Long Straddle (跨式 / 財報大波動)</option>
-                            </optgroup>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
-                    <div class="flex justify-between items-center">
-                        <span class="text-muted">現價 / 20MA(月線) 支撐</span>
-                        <span id="spotDisplay" class="font-bold">-</span>
-                    </div>
-                    <div class="flex justify-between items-center">
-                        <span class="text-muted">停損參考點位</span>
-                        <span id="stopLossDisplay" class="text-amber-500 font-bold">頸線 / 月線</span>
-                    </div>
-                </div>
-
-                <div class="bg-input p-2.5 rounded-lg border border-theme">
-                    <div class="flex justify-between items-center mb-1">
-                        <label class="text-muted">目標履約價 (Strike)</label>
-                        <span class="text-[10px] text-[#38bdf8] cursor-pointer hover:underline" onclick="autoAlignMA20()">🎯 智慧對齊 MA20</span>
-                    </div>
-                    <select id="strikeSelect" onchange="onStrikeChange()" class="w-full bg-card border border-theme rounded p-2 font-bold focus:outline-none focus:border-[#38bdf8]">
-                        <option value="">請選擇到期日...</option>
-                    </select>
-                </div>
-
-                <!-- Payoff 損益分佈圖 -->
-                <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
-                    <div class="font-bold text-[#38bdf8] flex justify-between items-center text-[11px]">
-                        <span>📈 Payoff 損益分佈預覽</span>
-                    </div>
-                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-card p-1.5 rounded border border-theme">
-                        <div>最大獲利: <strong id="payoffMax" class="text-emerald-500">--</strong></div>
-                        <div>最大虧損: <strong id="payoffMin" class="text-red-500">--</strong></div>
-                    </div>
-                    <canvas id="payoffCanvas" height="75" class="w-full bg-card rounded border border-theme mt-1"></canvas>
-                </div>
-
-                <!-- Greeks 風險敏感度 -->
-                <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
-                    <div class="font-bold text-[#38bdf8] border-b border-theme pb-0.5 text-[11px]">⚡ Greeks 風險敏感度</div>
-                    <div class="grid grid-cols-2 gap-2 text-[11px]">
-                        <div>Delta: <strong id="valDelta">-</strong></div>
-                        <div>Theta: <strong id="valTheta" class="text-amber-500">-</strong></div>
-                        <div>Gamma: <strong id="valGamma">-</strong></div>
-                        <div>Vega: <strong id="valVega">-</strong></div>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2 pt-1">
-                    <button onclick="calculateOptionStrategy()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black py-2 rounded-lg transition shadow text-xs">
-                        V9.8 風控檢核
-                    </button>
-                    <button onclick="sendCloudPush()" class="bg-[#06C755] hover:bg-[#05b34c] text-white font-black py-2 rounded-lg transition shadow text-xs">
-                        📲 LINE 戰報推播
-                    </button>
-                </div>
-            </div>
-        </aside>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <div id="earningsTag" class="hidden text-xs bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 font-bold"></div>
+        <div id="qualityTag" class="text-xs bg-emerald-500/20 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">—</div>
+        <div id="currentPriceTag" class="text-sm md:text-base font-bold bg-card px-3 py-1 rounded-lg border border-theme shadow">收盤: $-- (--%)</div>
+      </div>
     </div>
 
-    <!-- 📜 歷次改版紀錄 Modal -->
-    <div id="changeLogModal" class="fixed inset-0 bg-black/80 flex items-center justify-center hidden z-50 p-4">
-        <div class="bg-card border border-theme rounded-2xl p-6 w-full max-w-xl shadow-2xl space-y-4">
-            <div class="flex justify-between items-center border-b border-theme pb-2">
-                <div class="flex items-center space-x-2">
-                    <span class="text-lg">📜</span>
-                    <h3 class="text-base font-black">美股多空雷達戰情室 ｜ 歷次版本更新紀錄</h3>
-                </div>
-                <button onclick="closeChangeLogModal()" class="text-muted hover:opacity-100 text-base">✕</button>
-            </div>
-            <div class="space-y-3 text-xs max-h-[420px] overflow-y-auto pr-2 text-muted font-sans">
-                <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
-                    <div class="font-bold text-sm">V9.8 旗艦完全體 (2026-10-17)</div>
-                    <ul class="list-disc list-inside mt-1 space-y-0.5">
-                        <li>新增「月K」長線大格局走勢（日K / 週K / 月K 全面支援）。</li>
-                        <li>全面導入 Plotly 專業多層圖表，原汁原味整合中文畫趨勢線、方框與橡皮擦。</li>
-                        <li>修復橡皮擦與新增「一鍵清空所有畫線」功能，徹底解決無法刪除線條痛點。</li>
-                        <li>精簡外觀為「深色」與「淺色（柔和米灰護眼）」兩種模式，並支援老花特大字調節。</li>
-                        <li>四圖（K線/布林、成交量、KD、MACD）共用 X 軸完全同步縮放與平移。</li>
-                        <li>補齊 120MA（桃紅）並支援均線即時膠囊開關切換。</li>
-                        <li>選擇權策略擴充為 8 大主流策略（Short Put, Covered Call, Spreads, Straddle）。</li>
-                        <li>拔除所有假數據 fallback，期權合約如實直通，無合約真實提示。</li>
-                    </ul>
-                </div>
-                <div class="border-l-2 border-slate-600 pl-3 py-1">
-                    <div class="font-bold">V9.5 ~ V9.7 雲端整合版</div>
-                    <ul class="list-disc list-inside mt-1 space-y-0.5">
-                        <li>新增道瓊、那指、費半、標普、VIX 五大指數溫度計。</li>
-                        <li>LINE 官方 Messaging API 推播串接與 Webhook Group ID 綁定。</li>
-                        <li>夏令與冬令美股交易時間自動偵測與三段式智慧排程架構。</li>
-                    </ul>
-                </div>
-            </div>
-            <button onclick="closeChangeLogModal()" class="w-full bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black py-2 rounded-lg text-xs transition">關 閉</button>
-        </div>
+    <div class="flex flex-wrap items-center gap-1.5 mb-1.5 text-xs">
+      <span class="text-muted font-bold mr-1">📐 均線/指標:</span>
+      <button onclick="toggleIndicator('ma5')" id="pill_ma5" class="pill-active px-2 py-0.5 rounded border border-[#D97706]">5MA</button>
+      <button onclick="toggleIndicator('ma10')" id="pill_ma10" class="pill-inactive px-2 py-0.5 rounded border border-[#2563EB]">10MA</button>
+      <button onclick="toggleIndicator('ma20')" id="pill_ma20" class="pill-active px-2 py-0.5 rounded border border-[#7C3AED]">20MA</button>
+      <button onclick="toggleIndicator('ma60')" id="pill_ma60" class="pill-active px-2 py-0.5 rounded border border-[#0D9488]">60MA</button>
+      <button onclick="toggleIndicator('ma120')" id="pill_ma120" class="pill-inactive px-2 py-0.5 rounded border border-[#DB2777]">120MA</button>
+      <button onclick="toggleIndicator('ma240')" id="pill_ma240" class="pill-active px-2 py-0.5 rounded border border-[#64748b]">240MA(年線)</button>
+      <button onclick="toggleIndicator('bb')" id="pill_bb" class="pill-inactive px-2 py-0.5 rounded border border-[#64748b]">布林</button>
+      <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309]"><span id="neckPillText">頸線</span></button>
     </div>
 
-    <!-- LINE 戰報預覽視窗 -->
-    <div id="lineModal" class="fixed inset-0 bg-black/75 flex items-center justify-center hidden z-50 p-4">
-        <div class="bg-card border border-theme rounded-2xl p-5 w-full max-w-md shadow-2xl space-y-3">
-            <div class="flex justify-between items-center border-b border-theme pb-2">
-                <div class="flex items-center space-x-2">
-                    <span class="w-3 h-3 bg-[#06C755] rounded-full"></span>
-                    <h3 class="text-sm font-black">📲 美股多空雷達 V9.8 ｜ LINE 戰報</h3>
-                </div>
-                <button onclick="closeLineModal()" class="text-muted hover:opacity-100 text-sm">✕</button>
-            </div>
-            <div class="bg-input p-3.5 rounded-xl border border-theme text-xs font-mono text-muted space-y-1.5 whitespace-pre-wrap max-h-[340px] overflow-y-auto" id="linePreviewText"></div>
-            <button onclick="closeLineModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-xs transition">確 認</button>
-        </div>
+    <div class="flex flex-wrap justify-center items-center bg-card border border-theme py-1.5 px-3 rounded-lg text-sm mb-2 gap-2 shadow">
+      <span class="font-bold text-[#38bdf8] mr-1">🛠️ 畫線:</span>
+      <button class="tool-btn" onclick="setPlotlyMode('drawline')">📏 直線</button>
+      <button class="tool-btn" onclick="setPlotlyMode('drawrect')">📦 方框</button>
+      <button class="tool-btn" onclick="setPlotlyMode('drawcircle')">⭕ 圓形</button>
+      <span class="text-muted">|</span>
+      <button class="tool-btn text-red-500" onclick="setPlotlyMode('eraseshape')">🧹 點選刪除</button>
+      <button class="tool-btn text-red-500" onclick="clearAllShapes()">🗑️ 全部清空</button>
+      <span class="text-muted">|</span>
+      <button class="tool-btn" onclick="setPlotlyMode('pan')">✋ 平移(預設)</button>
+      <button class="tool-btn" onclick="setPlotlyMode('zoom')">🔍 框選放大</button>
+      <button class="tool-btn" onclick="resetPlotlyAxes()">🏠 還原</button>
+      <span id="touchHint" class="hidden text-xs text-muted">觸控裝置預設鎖定圖表以便捲動頁面，點上方按鈕即可操作</span>
     </div>
 
-    <script>
-        let currentSpot = 0, currentMA20 = 0, currentMA240 = 0, currentNeckline = 0;
-        let currentSymbol = "PLTR";
-        let currentInterval = "1d";
-        let currentOptionData = null;
-        let currentSector = "ALL";
-        let currentRadarMode = "LONG";
-        let universeData = [];
-        let currentRawData = null;
+    <div id="plotlyChartContainer" class="bg-card border border-theme rounded-xl p-2 w-full h-[620px] md:h-[680px]"></div>
+  </main>
 
-        let indState = {
-            ma5: true, ma10: false, ma20: true, ma60: true, ma120: true, ma240: true, bb: false, neck: true
-        };
+  <aside id="rightSidebar" class="w-96 bg-card border-l border-theme flex flex-col p-4 shrink-0 overflow-y-auto">
+    <h2 class="text-sm font-black mb-2.5 flex items-center justify-between">
+      <span>📊 選擇權策略風控</span>
+      <span class="text-xs bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">逐腿真實報價</span>
+    </h2>
+    <div class="space-y-2.5 text-sm">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div>
+          <label class="text-muted block mb-1 text-xs">到期日</label>
+          <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-input border border-theme rounded p-2 font-bold"><option value="">載入中...</option></select>
+        </div>
+        <div>
+          <label class="text-muted block mb-1 text-xs">策略 (8大主流)</label>
+          <select id="strategySelect" onchange="onStrategyChange()" class="w-full bg-input border border-theme rounded p-2 font-bold">
+            <optgroup label="💰 賣方穩健收租">
+              <option value="csp" selected>Short Put (低接收租)</option>
+              <option value="cc">Covered Call (現股包租公)</option>
+              <option value="bull_put">Bull Put Spread (賣權多頭價差)</option>
+            </optgroup>
+            <optgroup label="🚀 買方方向波段">
+              <option value="long_call">Long Call</option>
+              <option value="long_put">Long Put</option>
+              <option value="bull_call">Bull Call Spread</option>
+              <option value="bear_put">Bear Put Spread</option>
+            </optgroup>
+            <optgroup label="⚡ 波動度交易">
+              <option value="straddle">Long Straddle</option>
+            </optgroup>
+          </select>
+        </div>
+      </div>
 
-        function toggleSettingsDrawer() {
-            const drawer = document.getElementById('settingsDrawer');
-            drawer.classList.toggle('hidden');
-        }
+      <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
+        <div class="flex justify-between"><span class="text-muted">現價 / 20MA</span><span id="spotDisplay" class="font-bold">-</span></div>
+        <div class="flex justify-between"><span class="text-muted">停損參考</span><span id="stopLossDisplay" class="text-amber-500 font-bold">-</span></div>
+      </div>
 
-        // ⭐ 深色 / 淺色柔和 兩大主題切換
-        function switchTheme(theme) {
-            const root = document.getElementById('bodyRoot');
-            if (theme === 'light') {
-                root.classList.add('theme-light');
-            } else {
-                root.classList.remove('theme-light');
-            }
-            if (currentRawData) renderPlotlyChart(currentRawData);
-        }
+      <div class="bg-input p-2.5 rounded-lg border border-theme space-y-2">
+        <div>
+          <div class="flex justify-between items-center mb-1">
+            <label class="text-muted text-xs" id="strike1Label">履約價 (Strike)</label>
+            <span class="text-xs text-[#38bdf8] cursor-pointer hover:underline" onclick="autoAlignMA20()">🎯 對齊 MA20</span>
+          </div>
+          <select id="strikeSelect" onchange="recompute()" class="w-full bg-card border border-theme rounded p-2 font-bold"><option value="">請先選到期日</option></select>
+        </div>
+        <div id="strike2Wrap" class="hidden">
+          <label class="text-muted text-xs block mb-1" id="strike2Label">第二腿履約價</label>
+          <select id="strike2Select" onchange="recompute()" class="w-full bg-card border border-theme rounded p-2 font-bold"></select>
+        </div>
+        <div id="chainNote" class="text-xs text-amber-500"></div>
+        <button id="retryChainBtn" onclick="onExpirationChange()" class="hidden w-full text-xs py-1 rounded border border-amber-500/50 text-amber-500 font-bold">↻ 重試取得期權鏈</button>
+      </div>
 
-        // ⭐ 老花友善字體切換（標準 / 大字 120% / 特大字 140%）
-        function setFontSize(size) {
-            const root = document.documentElement;
-            ['normal', 'large', 'xlarge'].forEach(s => {
-                const btn = document.getElementById(`btn_font_${s}`);
-                if (btn) btn.className = (s === size) ? "px-2.5 py-1 rounded bg-card border border-[#38bdf8] font-bold" : "px-2.5 py-1 rounded bg-card border border-theme";
-            });
+      <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
+        <div class="font-bold text-[#38bdf8] text-xs flex justify-between"><span>📈 到期損益 (每口 100 股)</span><span id="netPremium" class="text-muted">--</span></div>
+        <div class="grid grid-cols-2 gap-2 text-xs bg-card p-1.5 rounded border border-theme">
+          <div>最大獲利: <strong id="payoffMax" class="text-emerald-500">--</strong></div>
+          <div>最大虧損: <strong id="payoffMin" class="text-red-500">--</strong></div>
+          <div class="col-span-2">損益兩平: <strong id="payoffBE">--</strong></div>
+        </div>
+        <div id="payoffChart" class="w-full" style="height:190px;"></div>
+      </div>
 
-            if (size === 'large') root.style.fontSize = '19.2px';
-            else if (size === 'xlarge') root.style.fontSize = '22.4px';
-            else root.style.fontSize = '16px';
-        }
+      <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
+        <div class="font-bold text-[#38bdf8] border-b border-theme pb-0.5 text-xs">⚡ Greeks（各腿加總，每股）</div>
+        <div class="grid grid-cols-2 gap-2 text-sm">
+          <div>Delta: <strong id="valDelta">-</strong></div><div>Theta: <strong id="valTheta" class="text-amber-500">-</strong></div>
+          <div>Gamma: <strong id="valGamma">-</strong></div><div>Vega: <strong id="valVega">-</strong></div>
+        </div>
+      </div>
 
-        function openChangeLogModal() { document.getElementById('changeLogModal').classList.remove('hidden'); }
-        function closeChangeLogModal() { document.getElementById('changeLogModal').classList.add('hidden'); }
+      <div id="riskBox" class="hidden bg-input p-2.5 rounded-lg border border-amber-500/40 text-xs whitespace-pre-wrap leading-relaxed"></div>
 
-        function setRadarMode(mode) {
-            currentRadarMode = mode;
-            if (mode === 'LONG') {
-                document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-[#C0392B] text-white transition";
-                document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-input text-muted hover:text-white transition";
-            } else {
-                document.getElementById('mode_short').className = "py-1 rounded text-xs font-bold bg-[#1E7E5A] text-white transition";
-                document.getElementById('mode_long').className = "py-1 rounded text-xs font-bold bg-input text-muted hover:text-white transition";
-            }
-            loadScreenerList();
-        }
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button onclick="calculateOptionStrategy()" class="bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg shadow text-sm">風控檢核</button>
+        <button onclick="sendCloudPush()" class="bg-[#06C755] text-white font-black py-2 rounded-lg shadow text-sm">📲 LINE 推播</button>
+      </div>
+      <div class="text-xs text-muted leading-relaxed">※ 買進以 Ask、賣出以 Bid 計價（較保守）；盤後無報價時改用最後成交價並提示。損益為「到期日」理論值，未含手續費、提前履約與保證金。</div>
+    </div>
+  </aside>
+</div>
 
-        async function fetchIndicesData() {
-            try {
-                const res = await fetch('/api/market/indices');
-                const data = await res.json();
-                
-                const fmtIdx = (obj) => {
-                    const arrow = obj.chg >= 0 ? '▲' : '▼';
-                    const color = obj.chg >= 0 ? 'text-[#C0392B]' : 'text-[#1E7E5A]';
-                    return `<span class="${color}">${obj.close.toLocaleString()} (${arrow}${Math.abs(obj.pct)}%)</span>`;
-                };
+<div id="changeLogModal" class="fixed inset-0 bg-black/80 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-card border border-theme rounded-2xl p-6 w-full max-w-xl shadow-2xl space-y-4">
+    <div class="flex justify-between items-center border-b border-theme pb-2">
+      <h3 class="text-base font-black">📜 美股多空雷達戰情室 ｜ 版本紀錄</h3>
+      <button onclick="closeChangeLogModal()" class="text-muted text-base">✕</button>
+    </div>
+    <div class="space-y-3 text-sm max-h-[420px] overflow-y-auto pr-2 text-muted">
+      <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
+        <div class="font-bold text-base" style="color:var(--text-main)">V9.9 風控強化版 (2026-10-18)</div>
+        <ul class="list-disc list-inside mt-1 space-y-0.5">
+          <li>修正均線暖機：年線/半年線不再以不足期數的平均值偽造，改抓更長歷史計算。</li>
+          <li>頸線依多空方向計算（空方用N日最低），並與設定的天數同步到 K 線圖；品質標籤依方向判斷。</li>
+          <li>選擇權改為逐腿真實計價：價差、跨式可選第二履約價；Payoff 與損益兩平以真實報價計算；Greeks 為各腿加總。</li>
+          <li>期權鏈改為選到期日才抓取並加快取，大幅降低 Yahoo 限流造成的「無合約」。</li>
+          <li>篩選器批次下載＋5分鐘快取，並修正全市場只掃前 30 檔的問題。</li>
+          <li>新增財報日提醒（財報在到期日前時警示）。</li>
+          <li>LINE 推播加入通行碼、冷卻與真實送出狀態；推播時間改為台北/美東。</li>
+          <li>切換指標/週期時保留已畫的線；主題與字體記憶；錯誤訊息可見。</li>
+        </ul>
+      </div>
+      <div class="border-l-2 border-slate-600 pl-3 py-1">
+        <div class="font-bold">V9.8 旗艦完全體 (2026-10-17)</div>
+        <ul class="list-disc list-inside mt-1"><li>月K、Plotly 四層圖、中文畫線工具、8 大選擇權策略。</li></ul>
+      </div>
+    </div>
+    <button onclick="closeChangeLogModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-sm">關 閉</button>
+  </div>
+</div>
 
-                document.getElementById('idx_dji').innerHTML = fmtIdx(data.dji);
-                document.getElementById('idx_ixic').innerHTML = fmtIdx(data.ixic);
-                document.getElementById('idx_sox').innerHTML = fmtIdx(data.sox);
-                document.getElementById('idx_spx').innerHTML = fmtIdx(data.spx);
-                document.getElementById('idx_vix').innerHTML = `<span class="text-amber-500">${data.vix.close} (${data.vix.status})</span>`;
-            } catch(e) {}
-        }
+<div id="lineModal" class="fixed inset-0 bg-black/75 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-card border border-theme rounded-2xl p-5 w-full max-w-md shadow-2xl space-y-3">
+    <div class="flex justify-between items-center border-b border-theme pb-2">
+      <h3 class="text-sm font-black">📲 LINE 戰報</h3>
+      <button onclick="closeLineModal()" class="text-muted text-sm">✕</button>
+    </div>
+    <div id="lineResult" class="text-sm font-bold"></div>
+    <div class="bg-input p-3.5 rounded-xl border border-theme text-xs font-mono text-muted whitespace-pre-wrap max-h-[300px] overflow-y-auto" id="linePreviewText"></div>
+    <button onclick="closeLineModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-sm">確 認</button>
+  </div>
+</div>
 
-        async function loadScreenerList() {
-            const neckDays = document.getElementById('cfg_neckDays') ? document.getElementById('cfg_neckDays').value : 20;
-            const volRatio = document.getElementById('cfg_volRatio') ? document.getElementById('cfg_volRatio').value : 1.2;
-            try {
-                const res = await fetch(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}&neck_days=${neckDays}&vol_ratio=${volRatio}`);
-                const data = await res.json();
-                universeData = data.screener_list;
-                renderWatchlist();
-            } catch(e) {}
-        }
+<script>
+const isTouch = window.matchMedia('(pointer: coarse)').matches;
+let currentSpot = 0, currentMA20 = 0, currentNeckline = null;
+let currentSymbol = "PLTR", currentInterval = "1d";
+let currentSector = "ALL", currentRadarMode = "LONG";
+let universeData = [], currentRawData = null;
+let chainCache = {}, currentChain = null, currentExpirations = [];
+let lastRender = {symbol: null, interval: null};
+let nextEarnings = null;
+let indState = {ma5:true, ma10:false, ma20:true, ma60:true, ma120:false, ma240:true, bb:false, neck:true};
 
-        function onSectorChange() {
-            currentSector = document.getElementById('sectorSelect').value;
-            loadScreenerList();
-        }
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt$ = v => (v < 0 ? '-$' : '+$') + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0});
 
-        function renderWatchlist() {
-            const container = document.getElementById('watchlist');
-            container.innerHTML = '';
-            if (!universeData || universeData.length === 0) {
-                container.innerHTML = `<div class="p-4 text-center text-xs text-muted">目前時段無符合 ${currentRadarMode === 'LONG' ? '多方突破' : '空方破底'} 之標的</div>`;
-                return;
-            }
-            universeData.forEach((item, idx) => {
-                const div = document.createElement('div');
-                div.className = "flex items-center justify-between px-3 py-2 rounded-lg bg-input hover:opacity-80 transition group border border-theme";
-                div.innerHTML = `
-                    <div onclick="fetchStockData('${item.symbol}')" class="flex-1 cursor-pointer">
-                        <div class="font-bold group-hover:text-[#38bdf8] text-xs flex justify-between">
-                            <span>${item.symbol} <span class="text-[10px] text-amber-500">[${item.sector}]</span></span>
-                            <span class="text-[10px] text-emerald-500 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${item.score}</span>
-                        </div>
-                        <div class="text-[11px] text-muted flex justify-between mt-0.5">
-                            <span class="truncate max-w-[120px]">${item.name}</span>
-                            <span>距頸線 ${item.dist_neck_pct}%</span>
-                        </div>
-                    </div>
-                `;
-                container.appendChild(div);
-            });
-        }
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let m = 'HTTP ' + r.status;
+    try { const j = await r.json(); if (j.detail) m = j.detail; } catch (e) {}
+    throw new Error(m);
+  }
+  return r.json();
+}
+function setStatus(msg, isErr) {
+  const el = document.getElementById('statusBar');
+  if (!msg) { el.classList.add('hidden'); return; }
+  el.className = 'text-xs px-2 py-1 rounded border ' + (isErr ? 'border-red-500/50 text-red-400 bg-red-500/10' : 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10');
+  el.textContent = msg;
+  if (!isErr) setTimeout(() => { if (el.textContent === msg) el.classList.add('hidden'); }, 4000);
+}
+function neckDays() { return Math.max(5, Math.min(60, parseInt(document.getElementById('cfg_neckDays').value) || 20)); }
+function volRatio() { return Math.max(1, Math.min(5, parseFloat(document.getElementById('cfg_volRatio').value) || 1.2)); }
 
-        function addCustomSymbol() {
-            const symbol = document.getElementById('customSymbol').value.trim().toUpperCase();
-            if(symbol) {
-                fetchStockData(symbol);
-                document.getElementById('customSymbol').value = '';
-            }
-        }
+function toggleSettingsDrawer() { document.getElementById('settingsDrawer').classList.toggle('hidden'); }
+function switchTheme(theme) {
+  document.getElementById('bodyRoot').classList.toggle('theme-light', theme === 'light');
+  try { localStorage.setItem('us_theme', theme); } catch (e) {}
+  document.querySelectorAll('input[name=themeRadio]').forEach(r => r.checked = (r.value === theme));
+  if (currentRawData) renderPlotlyChart(currentRawData);
+}
+function setFontSize(size) {
+  ['normal','large','xlarge'].forEach(s => {
+    const b = document.getElementById('btn_font_' + s);
+    if (b) b.className = 'px-2.5 py-1 rounded bg-card border ' + (s === size ? 'border-[#38bdf8] font-bold' : 'border-theme');
+  });
+  document.documentElement.style.fontSize = size === 'large' ? '19.2px' : (size === 'xlarge' ? '22.4px' : '16px');
+  try { localStorage.setItem('us_font', size); } catch (e) {}
+}
+function openChangeLogModal() { document.getElementById('changeLogModal').classList.remove('hidden'); }
+function closeChangeLogModal() { document.getElementById('changeLogModal').classList.add('hidden'); }
+function closeLineModal() { document.getElementById('lineModal').classList.add('hidden'); }
 
-        function toggleIndicator(key) {
-            indState[key] = !indState[key];
-            const btn = document.getElementById(`pill_${key}`);
-            if (indState[key]) {
-                btn.className = "pill-active px-2 py-0.5 rounded border text-[11px] transition";
-            } else {
-                btn.className = "pill-inactive px-2 py-0.5 rounded border text-[11px] transition";
-            }
-            if (currentRawData) renderPlotlyChart(currentRawData);
-        }
+function setRadarMode(mode) {
+  currentRadarMode = mode;
+  document.getElementById('mode_long').className = 'py-1 rounded text-xs font-bold ' + (mode === 'LONG' ? 'bg-[#C0392B] text-white' : 'bg-input text-muted');
+  document.getElementById('mode_short').className = 'py-1 rounded text-xs font-bold ' + (mode === 'SHORT' ? 'bg-[#1E7E5A] text-white' : 'bg-input text-muted');
+  loadScreenerList();
+  fetchStockData(currentSymbol);
+}
+function onParamChange() { loadScreenerList(); fetchStockData(currentSymbol); }
+function onSectorChange() { currentSector = document.getElementById('sectorSelect').value; loadScreenerList(); }
 
-        // ⭐ 畫線模式切換
-        function setPlotlyMode(mode) {
-            const el = document.getElementById('plotlyChartContainer');
-            if (!el || !el._fullLayout) return;
-            if (mode === 'drawline') Plotly.relayout(el, { dragmode: 'drawline' });
-            else if (mode === 'drawrect') Plotly.relayout(el, { dragmode: 'drawrect' });
-            else if (mode === 'drawcircle') Plotly.relayout(el, { dragmode: 'drawcircle' });
-            else if (mode === 'eraseshape') Plotly.relayout(el, { dragmode: 'eraseshape' });
-            else if (mode === 'zoom') Plotly.relayout(el, { dragmode: 'zoom' });
-            else if (mode === 'pan') Plotly.relayout(el, { dragmode: 'pan' });
-        }
+async function fetchIndicesData() {
+  try {
+    const data = await api('/api/market/indices');
+    const f = o => {
+      const up = o.chg >= 0, col = up ? 'text-[#C0392B]' : 'text-[#1E7E5A]';
+      return `<span class="${col}">${Number(o.close).toLocaleString()} (${up ? '▲' : '▼'}${Math.abs(o.pct)}%)</span>`;
+    };
+    ['dji','ixic','sox','spx'].forEach(k => document.getElementById('idx_' + k).innerHTML = f(data[k]));
+    document.getElementById('idx_vix').innerHTML = `<span class="text-amber-500">${data.vix.close} (${esc(data.vix.status)})</span>`;
+    document.getElementById('sessionTag').textContent = `美股${data.session}｜美東 ${data.et_time}`;
+  } catch (e) { setStatus('指數載入失敗：' + e.message, true); }
+}
 
-        // ⭐ 一鍵清空畫面上所有的自訂線條與幾何形狀
-        function clearAllShapes() {
-            const el = document.getElementById('plotlyChartContainer');
-            if (el) {
-                Plotly.relayout(el, { shapes: [] });
-            }
-        }
+async function loadScreenerList() {
+  const note = document.getElementById('screenerNote');
+  note.textContent = '掃描中...';
+  try {
+    const data = await api(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}&neck_days=${neckDays()}&vol_ratio=${volRatio()}`);
+    universeData = data.screener_list;
+    let t = `已掃描 ${data.scanned} 檔`;
+    if (data.failed) t += `，${data.failed} 檔取不到資料`;
+    if (data.partial_volume) t += '｜盤中成交量尚未累積完整，量比會偏低';
+    note.textContent = t;
+    renderWatchlist();
+  } catch (e) { note.textContent = ''; setStatus('篩選失敗：' + e.message, true); }
+}
 
-        function resetPlotlyAxes() {
-            const el = document.getElementById('plotlyChartContainer');
-            if (el) Plotly.relayout(el, { 'xaxis.autorange': true, 'yaxis.autorange': true });
-        }
+function renderWatchlist() {
+  const box = document.getElementById('watchlist');
+  box.innerHTML = '';
+  if (!universeData.length) {
+    box.innerHTML = `<div class="p-4 text-center text-sm text-muted">目前無符合「${currentRadarMode === 'LONG' ? '多方突破' : '空方破底'}」之標的</div>`;
+    return;
+  }
+  universeData.forEach(item => {
+    const up = item.pct >= 0;
+    const div = document.createElement('div');
+    div.className = 'px-3 py-2 rounded-lg bg-input hover:opacity-80 transition border border-theme cursor-pointer';
+    div.innerHTML = `
+      <div class="font-bold text-sm flex justify-between">
+        <span>${esc(item.symbol)} <span class="text-xs text-amber-500">[${esc(item.sector)}]</span></span>
+        <span class="text-xs text-emerald-500 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${esc(item.score)}${item.first_day ? '·首日' : ''}</span>
+      </div>
+      <div class="text-xs text-muted flex justify-between mt-0.5">
+        <span class="truncate max-w-[110px]">${esc(item.name)}</span>
+        <span style="color:${up ? '#C0392B' : '#1E7E5A'}">$${item.price} (${up ? '▲' : '▼'}${Math.abs(item.pct)}%)</span>
+      </div>
+      <div class="text-xs text-muted flex justify-between"><span>量比 ${item.v_ratio}x</span><span>距${currentRadarMode === 'LONG' ? '頸線' : '跌破線'} ${item.dist_neck_pct > 0 ? '+' : ''}${item.dist_neck_pct}%</span></div>`;
+    div.onclick = () => fetchStockData(item.symbol);
+    box.appendChild(div);
+  });
+}
 
-        function renderPlotlyChart(data) {
-            currentRawData = data;
-            const dates = data.dates;
-            const traces = [];
+function addCustomSymbol() {
+  const s = document.getElementById('customSymbol').value.trim().toUpperCase();
+  if (s) { fetchStockData(s); document.getElementById('customSymbol').value = ''; }
+}
 
-            // 依據深淺色模式調整圖表色彩
-            const isLight = document.getElementById('bodyRoot').classList.contains('theme-light');
-            const paperBg = isLight ? '#ffffff' : '#121824';
-            const plotBg = isLight ? '#f8fafc' : '#0b0e14';
-            const gridCol = isLight ? '#e2e8f0' : '#1e293b';
-            const textCol = isLight ? '#475569' : '#94a3b8';
+function toggleIndicator(key) {
+  indState[key] = !indState[key];
+  const b = document.getElementById('pill_' + key);
+  b.classList.toggle('pill-active', indState[key]);
+  b.classList.toggle('pill-inactive', !indState[key]);
+  if (currentRawData) renderPlotlyChart(currentRawData);
+}
 
-            // 1. K線
-            traces.push({
-                x: dates, open: data.opens, high: data.highs, low: data.lows, close: data.closes,
-                type: 'candlestick', name: 'K線',
-                increasing: { line: { color: '#C0392B' }, fillcolor: '#C0392B' },
-                decreasing: { line: { color: '#1E7E5A' }, fillcolor: '#1E7E5A' },
-                xaxis: 'x', yaxis: 'y'
-            });
+function setPlotlyMode(mode) {
+  const el = document.getElementById('plotlyChartContainer');
+  if (el && el._fullLayout) Plotly.relayout(el, {dragmode: mode});
+}
+function clearAllShapes() {
+  const el = document.getElementById('plotlyChartContainer');
+  if (el && el._fullLayout) Plotly.relayout(el, {shapes: []});
+}
+function resetPlotlyAxes() {
+  const el = document.getElementById('plotlyChartContainer');
+  if (el && el._fullLayout) Plotly.relayout(el, {'xaxis.autorange': true, 'yaxis.autorange': true});
+}
 
-            // 均線
-            if (indState.ma5) traces.push({ x: dates, y: data.ma5, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.5 }, name: '5MA', xaxis: 'x', yaxis: 'y' });
-            if (indState.ma10) traces.push({ x: dates, y: data.ma10, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.5 }, name: '10MA', xaxis: 'x', yaxis: 'y' });
-            if (indState.ma20) traces.push({ x: dates, y: data.ma20, type: 'scatter', mode: 'lines', line: { color: '#7C3AED', width: 2 }, name: '20MA(月線)', xaxis: 'x', yaxis: 'y' });
-            if (indState.ma60) traces.push({ x: dates, y: data.ma60, type: 'scatter', mode: 'lines', line: { color: '#0D9488', width: 1.5 }, name: '60MA(季線)', xaxis: 'x', yaxis: 'y' });
-            if (indState.ma120) traces.push({ x: dates, y: data.ma120, type: 'scatter', mode: 'lines', line: { color: '#DB2777', width: 1.5 }, name: '120MA(半年)', xaxis: 'x', yaxis: 'y' });
-            if (indState.ma240) traces.push({ x: dates, y: data.ma240, type: 'scatter', mode: 'lines', line: { color: '#64748b', width: 1.5, dash: 'dash' }, name: '240MA(年線)', xaxis: 'x', yaxis: 'y' });
+function renderPlotlyChart(data) {
+  currentRawData = data;
+  const el = document.getElementById('plotlyChartContainer');
+  const sameChart = lastRender.symbol === data.symbol && lastRender.interval === data.interval;
+  const keepShapes = (sameChart && el.layout && el.layout.shapes) ? el.layout.shapes : [];
+  lastRender = {symbol: data.symbol, interval: data.interval};
 
-            if (indState.bb) {
-                traces.push({ x: dates, y: data.bb_up, type: 'scatter', mode: 'lines', line: { color: 'rgba(148, 163, 184, 0.55)', width: 1, dash: 'dot' }, name: '布林上軌', xaxis: 'x', yaxis: 'y' });
-                traces.push({ x: dates, y: data.bb_low, type: 'scatter', mode: 'lines', line: { color: 'rgba(148, 163, 184, 0.55)', width: 1, dash: 'dot' }, name: '布林下軌', xaxis: 'x', yaxis: 'y' });
-            }
+  const d = data.dates, T = [];
+  const light = document.getElementById('bodyRoot').classList.contains('theme-light');
+  const paperBg = light ? '#ffffff' : '#121824', plotBg = light ? '#f8fafc' : '#0b0e14';
+  const grid = light ? '#e2e8f0' : '#1e293b', txt = light ? '#475569' : '#94a3b8';
 
-            if (indState.neck) {
-                traces.push({ x: dates, y: Array(dates.length).fill(data.neckline), type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 2, dash: 'dash' }, name: '20日頸線', xaxis: 'x', yaxis: 'y' });
-            }
+  T.push({x:d, open:data.opens, high:data.highs, low:data.lows, close:data.closes, type:'candlestick', name:'K線',
+    increasing:{line:{color:'#C0392B'}, fillcolor:'#C0392B'}, decreasing:{line:{color:'#1E7E5A'}, fillcolor:'#1E7E5A'}, xaxis:'x', yaxis:'y'});
+  const line = (y, color, name, w, dash) => ({x:d, y, type:'scatter', mode:'lines', connectgaps:false, line:{color, width:w||1.6, dash}, name, xaxis:'x', yaxis:'y'});
+  if (indState.ma5) T.push(line(data.ma5, '#D97706', '5MA'));
+  if (indState.ma10) T.push(line(data.ma10, '#2563EB', '10MA'));
+  if (indState.ma20) T.push(line(data.ma20, '#7C3AED', '20MA(月線)', 2.2));
+  if (indState.ma60) T.push(line(data.ma60, '#0D9488', '60MA(季線)'));
+  if (indState.ma120) T.push(line(data.ma120, '#DB2777', '120MA(半年)'));
+  if (indState.ma240) T.push(line(data.ma240, '#94a3b8', '240MA(年線)', 1.8, 'dash'));
+  if (indState.bb) {
+    T.push(line(data.bb_up, 'rgba(148,163,184,0.6)', '布林上軌', 1, 'dot'));
+    T.push(line(data.bb_low, 'rgba(148,163,184,0.6)', '布林下軌', 1, 'dot'));
+  }
+  const neckName = `${data.neck_days}${data.neck_unit}${data.mode === 'LONG' ? '頸線' : '跌破線'}`;
+  document.getElementById('neckPillText').textContent = neckName;
+  if (indState.neck && data.neckline != null) T.push(line(Array(d.length).fill(data.neckline), '#B45309', neckName + ' $' + data.neckline, 2, 'dash'));
 
-            // 2. 成交量
-            const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(192, 57, 43, 0.7)' : 'rgba(30, 126, 90, 0.7)');
-            traces.push({ x: dates, y: data.volumes, type: 'bar', marker: { color: volColors }, name: '成交量', xaxis: 'x', yaxis: 'y2' });
-            traces.push({ x: dates, y: data.vol_ma5, type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 1.5, dash: 'dot' }, name: '5日均量', xaxis: 'x', yaxis: 'y2' });
+  const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(192,57,43,0.7)' : 'rgba(30,126,90,0.7)');
+  T.push({x:d, y:data.volumes, type:'bar', marker:{color:volColors}, name:'成交量', xaxis:'x', yaxis:'y2'});
+  T.push({x:d, y:data.vol_ma5, type:'scatter', mode:'lines', line:{color:'#B45309', width:1.6, dash:'dot'}, name:'5均量', xaxis:'x', yaxis:'y2'});
+  T.push({x:d, y:data.k, type:'scatter', mode:'lines', line:{color:'#D97706', width:1.8}, name:'K(9)', xaxis:'x', yaxis:'y3'});
+  T.push({x:d, y:data.d, type:'scatter', mode:'lines', line:{color:'#2563EB', width:1.8}, name:'D(9)', xaxis:'x', yaxis:'y3'});
+  T.push({x:d, y:data.macd_hist, type:'bar', marker:{color:data.macd_hist.map(v => (v||0) >= 0 ? '#C0392B' : '#1E7E5A')}, name:'MACD柱', xaxis:'x', yaxis:'y4'});
+  T.push({x:d, y:data.macd_dif, type:'scatter', mode:'lines', line:{color:'#D97706', width:1.5}, name:'DIF', xaxis:'x', yaxis:'y4'});
+  T.push({x:d, y:data.macd_dea, type:'scatter', mode:'lines', line:{color:'#2563EB', width:1.5}, name:'DEA', xaxis:'x', yaxis:'y4'});
 
-            // 3. KD
-            traces.push({ x: dates, y: data.k, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.8 }, name: 'K(9)', xaxis: 'x', yaxis: 'y3' });
-            traces.push({ x: dates, y: data.d, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.8 }, name: 'D(9)', xaxis: 'x', yaxis: 'y3' });
+  const layout = {
+    paper_bgcolor:paperBg, plot_bgcolor:plotBg, font:{color:txt, family:'sans-serif', size:13},
+    margin:{l:10, r:55, t:15, b:28}, showlegend:false,
+    xaxis:{type:'category', rangeslider:{visible:false}, gridcolor:grid, nticks:isTouch ? 4 : 8},
+    yaxis:{domain:[0.52,1.0], gridcolor:grid, side:'right'},
+    yaxis2:{domain:[0.36,0.49], gridcolor:grid, side:'right', title:'量'},
+    yaxis3:{domain:[0.19,0.33], gridcolor:grid, range:[0,100], tickvals:[20,50,80], side:'right', title:'KD'},
+    yaxis4:{domain:[0.0,0.16], gridcolor:grid, side:'right', title:'MACD'},
+    hovermode:'x unified',
+    dragmode: isTouch ? false : 'pan',
+    shapes: keepShapes,
+    newshape:{line:{color:'#facc15', width:2.5}}
+  };
+  Plotly.newPlot(el, T, layout, {responsive:true, displayModeBar:false, scrollZoom:!isTouch, edits:{shapePosition:true}});
+}
 
-            // 4. MACD
-            const macdColors = data.macd_hist.map(v => v >= 0 ? '#C0392B' : '#1E7E5A');
-            traces.push({ x: dates, y: data.macd_hist, type: 'bar', marker: { color: macdColors }, name: 'MACD柱', xaxis: 'x', yaxis: 'y4' });
-            traces.push({ x: dates, y: data.macd_dif, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.5 }, name: 'DIF', xaxis: 'x', yaxis: 'y4' });
-            traces.push({ x: dates, y: data.macd_dea, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.5 }, name: 'DEA', xaxis: 'x', yaxis: 'y4' });
+async function fetchStockData(symbol) {
+  currentSymbol = symbol;
+  document.getElementById('chartTitle').innerText = `${symbol} 載入中...`;
+  try {
+    const data = await api(`/api/quote/${encodeURIComponent(symbol)}?interval=${currentInterval}&mode=${currentRadarMode}&neck_days=${neckDays()}`);
+    currentSpot = data.spot; currentMA20 = data.ma20_val; currentNeckline = data.neckline;
+    const iv = {'1d':'日K','1wk':'週K','1mo':'月K'}[currentInterval];
+    document.getElementById('chartTitle').innerText = `${data.symbol} ${data.name} [${data.exchange}] (${iv})`;
+    const up = data.chg >= 0;
+    const tag = document.getElementById('currentPriceTag');
+    tag.style.color = up ? '#C0392B' : '#1E7E5A';
+    tag.innerText = `收盤: $${data.spot} (${up ? '▲' : '▼'}${Math.abs(data.pct)}%) ${data.last_date}`;
+    document.getElementById('spotDisplay').innerText = `$${data.spot} (20MA: $${data.ma20_val})`;
+    document.getElementById('stopLossDisplay').innerText = `${data.neckline != null ? '頸線 $' + data.neckline : '—'} ／ 月線 $${data.ma20_val}`;
+    document.getElementById('qualityTag').innerText = data.quality_badge;
+    renderPlotlyChart(data);
+    loadOptionChain(data.symbol);
+    loadEarnings(data.symbol);
+  } catch (e) {
+    document.getElementById('chartTitle').innerText = `${symbol} 載入失敗`;
+    setStatus(`載入 ${symbol} 失敗：${e.message}`, true);
+  }
+}
 
-            const layout = {
-                paper_bgcolor: paperBg,
-                plot_bgcolor: plotBg,
-                font: { color: textCol, family: 'sans-serif', size: 11 },
-                margin: { l: 45, r: 45, t: 15, b: 25 },
-                showlegend: false,
-                xaxis: { type: 'category', rangeslider: { visible: false }, gridcolor: gridCol, nticks: 8 },
-                yaxis: { domain: [0.52, 1.0], gridcolor: gridCol, side: 'right' },
-                yaxis2: { domain: [0.36, 0.49], gridcolor: gridCol, side: 'right', title: '量' },
-                yaxis3: { domain: [0.19, 0.33], gridcolor: gridCol, range: [0, 100], side: 'right', title: 'KD' },
-                yaxis4: { domain: [0.0, 0.16], gridcolor: gridCol, side: 'right', title: 'MACD' },
-                hovermode: 'x unified',
-                dragmode: 'drawline',
-                newshape: { line: { color: '#facc15', width: 2.5 } }
-            };
+async function loadEarnings(symbol) {
+  nextEarnings = null;
+  const tag = document.getElementById('earningsTag');
+  tag.classList.add('hidden');
+  try {
+    const r = await api('/api/earnings/' + encodeURIComponent(symbol));
+    if (symbol !== currentSymbol) return;
+    nextEarnings = r.date;
+    if (r.date) { tag.textContent = '📅 下次財報 ' + r.date; tag.classList.remove('hidden'); }
+    checkEarningsVsExpiry();
+  } catch (e) {}
+}
+function checkEarningsVsExpiry() {
+  const exp = document.getElementById('expDateSelect').value;
+  const note = document.getElementById('chainNote');
+  if (nextEarnings && exp && nextEarnings <= exp) {
+    note.textContent = `⚠️ 財報日 ${nextEarnings} 落在到期日 ${exp} 之前：IV 可能在財報後大幅下降(IV Crush)，股價也可能跳空，賣方策略請特別留意。`;
+  }
+}
 
-            const config = {
-                responsive: true,
-                displayModeBar: false
-            };
+/* ===================== 選擇權 ===================== */
+const STRAT = {
+  csp:      {legs:[{t:'put', side:-1, k:1}], list:'put'},
+  cc:       {legs:[{t:'call', side:-1, k:1}], list:'call', stock:true},
+  bull_put: {legs:[{t:'put', side:-1, k:1}, {t:'put', side:1, k:2}], list:'put', k2:-1, k2label:'買進保護腿（較低履約價）'},
+  long_call:{legs:[{t:'call', side:1, k:1}], list:'call'},
+  long_put: {legs:[{t:'put', side:1, k:1}], list:'put'},
+  bull_call:{legs:[{t:'call', side:1, k:1}, {t:'call', side:-1, k:2}], list:'call', k2:1, k2label:'賣出腿（較高履約價）'},
+  bear_put: {legs:[{t:'put', side:1, k:1}, {t:'put', side:-1, k:2}], list:'put', k2:-1, k2label:'賣出腿（較低履約價）'},
+  straddle: {legs:[{t:'call', side:1, k:1}, {t:'put', side:1, k:1}], list:'call'}
+};
+function stratKey() { return document.getElementById('strategySelect').value; }
 
-            Plotly.newPlot('plotlyChartContainer', traces, layout, config);
-        }
+async function loadOptionChain(symbol) {
+  const expSel = document.getElementById('expDateSelect');
+  expSel.innerHTML = '<option value="">查詢到期日中...</option>';
+  document.getElementById('strikeSelect').innerHTML = '<option value="">請先選到期日</option>';
+  document.getElementById('chainNote').textContent = '';
+  document.getElementById('retryChainBtn').classList.add('hidden');
+  currentChain = null; chainCache = {};
+  try {
+    const r = await api('/api/options/' + encodeURIComponent(symbol));
+    if (symbol !== currentSymbol) return;
+    currentExpirations = r.expirations || [];
+    if (!currentExpirations.length) {
+      expSel.innerHTML = '<option value="">⚠️ 無期權合約</option>';
+      document.getElementById('chainNote').textContent = r.error || '此標的無期權合約';
+      document.getElementById('retryChainBtn').classList.remove('hidden');
+      return;
+    }
+    expSel.innerHTML = currentExpirations.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+    onExpirationChange();
+  } catch (e) {
+    expSel.innerHTML = '<option value="">⚠️ 取得失敗</option>';
+    document.getElementById('chainNote').textContent = e.message;
+    document.getElementById('retryChainBtn').classList.remove('hidden');
+  }
+}
 
-        async function fetchStockData(symbol) {
-            currentSymbol = symbol;
-            document.getElementById('chartTitle').innerText = `${symbol} 載入中...`;
-            try {
-                const res = await fetch(`/api/quote/${symbol}?interval=${currentInterval}`);
-                const data = await res.json();
-                if(data.dates && data.dates.length > 0) {
-                    currentSpot = data.spot;
-                    currentMA20 = data.ma20_val;
-                    currentMA240 = data.ma240_val;
-                    currentNeckline = data.neckline;
+async function onExpirationChange() {
+  const exp = document.getElementById('expDateSelect').value;
+  const note = document.getElementById('chainNote');
+  document.getElementById('retryChainBtn').classList.add('hidden');
+  if (!exp) { if (currentSymbol) loadOptionChain(currentSymbol); return; }
+  note.textContent = '載入期權鏈中...';
+  try {
+    const key = currentSymbol + '|' + exp;
+    if (!chainCache[key]) chainCache[key] = await api(`/api/options/${encodeURIComponent(currentSymbol)}/chain?exp=${exp}&spot=${currentSpot}`);
+    currentChain = chainCache[key];
+    note.textContent = '';
+    checkEarningsVsExpiry();
+    populateStrikes();
+  } catch (e) {
+    note.textContent = e.message;
+    document.getElementById('retryChainBtn').classList.remove('hidden');
+  }
+}
+function onStrategyChange() { if (currentChain) populateStrikes(); }
 
-                    const intvName = currentInterval === '1d' ? '日K' : (currentInterval === '1wk' ? '週K' : '月K');
-                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name} [${data.exchange}] (${intvName})`;
-                    
-                    const pSign = data.chg >= 0 ? '▲' : '▼';
-                    const pColor = data.chg >= 0 ? '#C0392B' : '#1E7E5A';
-                    document.getElementById('currentPriceTag').style.color = pColor;
-                    document.getElementById('currentPriceTag').innerText = `收盤: $${currentSpot} (${pSign}${Math.abs(data.pct)}%)`;
+function optLabel(o) {
+  const q = (o.bid > 0 || o.ask > 0) ? `Bid ${o.bid} / Ask ${o.ask}` : `最後成交 ${o.last}（無即時報價）`;
+  return `$${o.strike.toFixed(2)} | ${q} | IV ${(o.impliedVolatility * 100).toFixed(0)}% | OI ${o.openInterest.toLocaleString()}`;
+}
+function populateStrikes() {
+  const S = STRAT[stratKey()];
+  const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
+  const s1 = document.getElementById('strikeSelect');
+  s1.innerHTML = list.map((o, i) => `<option value="${i}">${esc(optLabel(o))}</option>`).join('');
+  document.getElementById('strike1Label').textContent = S.legs.length > 1 && S.k2 ? '主腿履約價（賣權/買權）' : '履約價 (Strike)';
+  const wrap = document.getElementById('strike2Wrap');
+  if (S.k2) {
+    wrap.classList.remove('hidden');
+    document.getElementById('strike2Label').textContent = S.k2label;
+    document.getElementById('strike2Select').innerHTML = list.map((o, i) => `<option value="${i}">${esc(optLabel(o))}</option>`).join('');
+  } else wrap.classList.add('hidden');
+  autoAlignMA20();
+}
+function nearestIdx(list, target) {
+  let bi = 0, bd = 1e12;
+  list.forEach((o, i) => { const d = Math.abs(o.strike - target); if (d < bd) { bd = d; bi = i; } });
+  return bi;
+}
+function autoAlignMA20() {
+  if (!currentChain) return;
+  const S = STRAT[stratKey()];
+  const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
+  if (!list.length) return;
+  let target = currentMA20 || currentSpot;
+  if (stratKey() === 'straddle') target = currentSpot;   // 跨式取最接近現價(ATM)
+  const i1 = nearestIdx(list, target);
+  document.getElementById('strikeSelect').selectedIndex = i1;
+  if (S.k2) {
+    const t2 = list[i1].strike * (1 + 0.05 * S.k2);
+    let i2 = nearestIdx(list, t2);
+    if (i2 === i1) i2 = Math.max(0, Math.min(list.length - 1, i1 + S.k2));
+    document.getElementById('strike2Select').selectedIndex = i2;
+  }
+  recompute();
+}
 
-                    document.getElementById('spotDisplay').innerText = `$${currentSpot} (20MA: $${currentMA20})`;
-                    document.getElementById('stopLossDisplay').innerText = `頸線 $${currentNeckline} ／ 月線 $${currentMA20}`;
-                    document.getElementById('qualityTag').innerText = data.quality_badge;
+function legPrice(o, side) {
+  // 買進用 Ask、賣出用 Bid；缺報價時退回最後成交價
+  const p = side > 0 ? (o.ask > 0 ? o.ask : o.last) : (o.bid > 0 ? o.bid : o.last);
+  return {price: p, approx: !(side > 0 ? o.ask > 0 : o.bid > 0)};
+}
+function buildLegs() {
+  if (!currentChain) return null;
+  const key = stratKey(), S = STRAT[key];
+  const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
+  const i1 = parseInt(document.getElementById('strikeSelect').value);
+  if (isNaN(i1) || !list[i1]) return null;
+  const o1 = list[i1];
+  let o2 = null;
+  if (S.k2) {
+    const i2 = parseInt(document.getElementById('strike2Select').value);
+    if (isNaN(i2) || !list[i2] || i2 === i1) return {error: '兩腿履約價不能相同，請重新選擇第二腿'};
+    o2 = list[i2];
+  }
+  const legs = S.legs.map(L => {
+    let opt;
+    if (L.k === 2) opt = o2;
+    else if (L.t === (S.list)) opt = o1;
+    else {   // 跨式的另一腿：同履約價的對向合約
+      const other = (L.t === 'call' ? currentChain.calls : currentChain.puts) || [];
+      opt = other[nearestIdx(other, o1.strike)];
+    }
+    const pp = legPrice(opt, L.side);
+    return {t: L.t, side: L.side, strike: opt.strike, prem: pp.price, approx: pp.approx, iv: opt.impliedVolatility};
+  });
+  // 價差方向檢查
+  if (key === 'bull_put' && legs[1].strike >= legs[0].strike) return {error: 'Bull Put：買進腿履約價必須低於賣出腿'};
+  if (key === 'bear_put' && legs[1].strike >= legs[0].strike) return {error: 'Bear Put：賣出腿履約價必須低於買進腿'};
+  if (key === 'bull_call' && legs[1].strike <= legs[0].strike) return {error: 'Bull Call：賣出腿履約價必須高於買進腿'};
+  return {legs, stock: !!S.stock};
+}
+function payoffAt(P, built) {
+  let v = 0;
+  built.legs.forEach(L => {
+    const intr = L.t === 'call' ? Math.max(P - L.strike, 0) : Math.max(L.strike - P, 0);
+    v += L.side > 0 ? (intr - L.prem) : (L.prem - intr);
+  });
+  if (built.stock) v += (P - currentSpot);
+  return v * 100;
+}
+function analyze(built) {
+  const S = currentSpot, pts = [];
+  for (let i = 0; i <= 600; i++) { const P = (S * 3) * i / 600; pts.push([P, payoffAt(P, built)]); }
+  const vals = pts.map(p => p[1]);
+  const slopeUp = payoffAt(S * 3.5, built) - payoffAt(S * 3, built);
+  const maxP = slopeUp > 1 ? Infinity : Math.max(...vals), minP = Math.min(...vals);
+  const be = [];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if ((a[1] < 0 && b[1] >= 0) || (a[1] > 0 && b[1] <= 0)) be.push(a[0] + (0 - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+  }
+  return {maxP, minP, be};
+}
+function drawPayoff(built, res) {
+  const S = currentSpot, xs = [], ys = [];
+  for (let i = 0; i <= 160; i++) { const P = S * 0.6 + (S * 0.8) * i / 160; xs.push(P); ys.push(payoffAt(P, built)); }
+  const light = document.getElementById('bodyRoot').classList.contains('theme-light');
+  const txt = light ? '#475569' : '#94a3b8', grid = light ? '#e2e8f0' : '#1e293b';
+  const shapes = [{type:'line', x0:S, x1:S, yref:'paper', y0:0, y1:1, line:{color:'#38bdf8', width:1, dash:'dot'}}];
+  built.legs.forEach(L => shapes.push({type:'line', x0:L.strike, x1:L.strike, yref:'paper', y0:0, y1:1, line:{color:'#B45309', width:1, dash:'dash'}}));
+  Plotly.newPlot('payoffChart', [
+    {x:xs, y:ys, type:'scatter', mode:'lines', line:{color:'#38bdf8', width:2.5}, fill:'tozeroy', fillcolor:'rgba(56,189,248,0.12)',
+     hovertemplate:'到期價 $%{x:.2f}<br>損益 %{y:,.0f}<extra></extra>'}
+  ], {
+    paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)', font:{color:txt, size:11}, margin:{l:48, r:8, t:6, b:24},
+    xaxis:{gridcolor:grid, tickprefix:'$'}, yaxis:{gridcolor:grid, zeroline:true, zerolinecolor:'#94a3b8'}, shapes, showlegend:false
+  }, {responsive:true, displayModeBar:false});
+}
+let lastBuilt = null, lastAnalysis = null;
+async function recompute() {
+  const built = buildLegs();
+  const note = document.getElementById('chainNote');
+  if (!built) return;
+  if (built.error) { note.textContent = built.error; return; }
+  checkEarningsVsExpiry();
+  if (!note.textContent) note.textContent = '';
+  lastBuilt = built;
+  const res = analyze(built); lastAnalysis = res;
+  const net = built.legs.reduce((a, L) => a + (L.side > 0 ? -L.prem : L.prem), 0) * 100;
+  document.getElementById('netPremium').textContent = (net >= 0 ? '淨收入 ' : '淨支出 ') + '$' + Math.abs(net).toFixed(0) + (built.legs.some(L => L.approx) ? ' (含最後成交價估算)' : '');
+  document.getElementById('payoffMax').textContent = res.maxP === Infinity ? '無上限' : fmt$(res.maxP);
+  document.getElementById('payoffMin').textContent = fmt$(res.minP);
+  document.getElementById('payoffBE').textContent = res.be.length ? res.be.map(b => '$' + b.toFixed(2)).join(' / ') : '無（不會損益兩平）';
+  drawPayoff(built, res);
 
-                    renderPlotlyChart(data);
-                    loadOptionChain(symbol);
-                }
-            } catch(e) {
-                alert('載入美股數據失敗，請確認代號是否正確');
-            }
-        }
+  // Greeks：各腿加總
+  const exp = document.getElementById('expDateSelect').value;
+  const days = Math.max(0.5, (new Date(exp + 'T21:00:00Z') - Date.now()) / 86400000);
+  const T = days / 365;
+  try {
+    const gs = await Promise.all(built.legs.map(L => {
+      const sigma = L.iv > 0.01 ? L.iv : 0.35;
+      return api(`/api/greeks?S=${currentSpot}&K=${L.strike}&T=${T}&sigma=${sigma}&type=${L.t}`);
+    }));
+    const sum = k => built.legs.reduce((a, L, i) => a + L.side * gs[i][k], 0) + (k === 'delta' && built.stock ? 1 : 0);
+    ['delta','theta','gamma','vega'].forEach(k => document.getElementById('val' + k[0].toUpperCase() + k.slice(1)).innerText = sum(k).toFixed(4));
+  } catch (e) {}
+}
 
-        async function loadOptionChain(symbol) {
-            const expSelect = document.getElementById('expDateSelect');
-            const strikeSelect = document.getElementById('strikeSelect');
-            expSelect.innerHTML = '<option value="">查詢真實期權鏈中...</option>';
-            strikeSelect.innerHTML = '<option value="">請選擇到期日...</option>';
+function calculateOptionStrategy() {
+  if (!lastBuilt || !lastAnalysis) return;
+  const key = stratKey(), L = lastBuilt.legs, a = lastAnalysis;
+  const exp = document.getElementById('expDateSelect').value;
+  const days = Math.max(1, Math.ceil((new Date(exp + 'T21:00:00Z') - Date.now()) / 86400000));
+  const lines = [`標的 ${currentSymbol}｜到期 ${exp}（約 ${days} 天）`];
+  const net = L.reduce((s, x) => s + (x.side > 0 ? -x.prem : x.prem), 0);
+  if (key === 'csp') {
+    const be = L[0].strike - L[0].prem;
+    const buffer = (currentSpot - be) / currentSpot * 100;
+    const ann = (L[0].prem / L[0].strike) * (365 / days) * 100;
+    lines.push(`損益兩平 $${be.toFixed(2)}，距現價下跌空間 ${buffer.toFixed(1)}%（${buffer >= 8 ? '✅ 緩衝充足' : '⚠️ 緩衝偏窄(<8%)'}）`);
+    lines.push(`年化報酬(以履約價為保證金) ≈ ${ann.toFixed(1)}%`);
+    lines.push(`最壞情況(股價歸零)每口虧損 ${fmt$(a.minP)}；接股成本 $${be.toFixed(2)}，請確認願意持有。`);
+  } else if (key === 'cc') {
+    const ann = ((L[0].prem + Math.max(0, L[0].strike - currentSpot)) / currentSpot) * (365 / days) * 100;
+    lines.push(`若被履約最大獲利 ${fmt$(a.maxP)}（含權利金與價差），年化 ≈ ${ann.toFixed(1)}%（假設持有到到期）`);
+    lines.push(`下跌風險：現股下跌的損失只被權利金 $${L[0].prem.toFixed(2)} 小幅緩衝。`);
+  } else {
+    const rr = a.maxP === Infinity ? '無上限' : (a.minP < 0 ? (a.maxP / Math.abs(a.minP)).toFixed(2) + ' : 1' : '—');
+    lines.push(`最大獲利 ${a.maxP === Infinity ? '無上限' : fmt$(a.maxP)}｜最大虧損 ${fmt$(a.minP)}｜報酬風險比 ${rr}`);
+    lines.push(`損益兩平 ${a.be.length ? a.be.map(b => '$' + b.toFixed(2)).join(' / ') : '無'}（現價 $${currentSpot}）`);
+  }
+  if (L.some(x => x.iv <= 0.01)) lines.push('⚠️ 有合約缺 IV 報價，Greeks 以 35% 估算。');
+  if (nextEarnings && nextEarnings <= exp) lines.push(`⚠️ 財報日 ${nextEarnings} 在到期日前。`);
+  const box = document.getElementById('riskBox');
+  box.textContent = lines.join('\n');
+  box.classList.remove('hidden');
+}
 
-            try {
-                const res = await fetch(`/api/options/${symbol}`);
-                const data = await res.json();
-                currentOptionData = data.chain;
-                expSelect.innerHTML = '';
-                
-                if (!data.expirations || data.expirations.length === 0) {
-                    expSelect.innerHTML = '<option value="">⚠️ 此標的目前無期權合約或非交易時段</option>';
-                    return;
-                }
+async function sendCloudPush() {
+  let pin = '';
+  try { pin = sessionStorage.getItem('us_pin') || ''; } catch (e) {}
+  if (!pin) { pin = prompt('請輸入管理員通行碼 (ADMIN_PUSH_PIN)') || ''; if (!pin) return; }
+  let summary = '';
+  if (lastBuilt && lastAnalysis) {
+    const legsTxt = lastBuilt.legs.map(L => `${L.side > 0 ? '買' : '賣'} ${L.t === 'call' ? 'Call' : 'Put'} $${L.strike}@${L.prem}`).join(' + ');
+    summary = `${legsTxt}｜到期 ${document.getElementById('expDateSelect').value}｜最大獲利 ${lastAnalysis.maxP === Infinity ? '無上限' : fmt$(lastAnalysis.maxP)} / 最大虧損 ${fmt$(lastAnalysis.minP)}`;
+  }
+  const result = document.getElementById('lineResult');
+  try {
+    const r = await api('/api/line/push', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Push-Pin': pin},
+      body: JSON.stringify({symbol: currentSymbol, strategy: stratKey(), mode: currentRadarMode, neck_days: neckDays(), summary})
+    });
+    try { sessionStorage.setItem('us_pin', pin); } catch (e) {}
+    result.textContent = r.status === 'success' ? '✅ 已成功送出 LINE 推播' : `❌ 推播失敗（LINE 狀態：${r.line_status}）`;
+    result.style.color = r.status === 'success' ? '#06C755' : '#ef4444';
+    document.getElementById('linePreviewText').innerText = r.preview_text;
+    document.getElementById('lineModal').classList.remove('hidden');
+  } catch (e) {
+    if (/通行碼錯誤/.test(e.message)) { try { sessionStorage.removeItem('us_pin'); } catch (x) {} }
+    setStatus('推播失敗：' + e.message, true);
+  }
+}
 
-                data.expirations.forEach(exp => {
-                    const opt = document.createElement('option');
-                    opt.value = exp;
-                    opt.innerText = exp;
-                    expSelect.appendChild(opt);
-                });
-                onExpirationChange();
-            } catch(e) {
-                expSelect.innerHTML = '<option value="">⚠️ 期權鏈取得失敗</option>';
-            }
-        }
+function changeInterval(intv) {
+  currentInterval = intv;
+  ['1d','1wk','1mo'].forEach(k => {
+    document.getElementById('btn_' + k).className = 'px-2.5 py-0.5 rounded font-bold ' + (k === intv ? 'bg-[#38bdf8] text-slate-950' : 'text-muted');
+  });
+  fetchStockData(currentSymbol);
+}
 
-        function onExpirationChange() {
-            const exp = document.getElementById('expDateSelect').value;
-            const strat = document.getElementById('strategySelect').value;
-            if(!currentOptionData || !currentOptionData[exp]) return;
-
-            const isCallBased = ['cc', 'long_call', 'bull_call'].includes(strat);
-            const strikes = isCallBased ? currentOptionData[exp].calls : currentOptionData[exp].puts;
-            const strikeSelect = document.getElementById('strikeSelect');
-            strikeSelect.innerHTML = '';
-
-            strikes.forEach(stk => {
-                const opt = document.createElement('option');
-                opt.value = JSON.stringify(stk);
-                opt.innerText = `Strike: $${stk.strike.toFixed(2)} (Bid: $${stk.bid} / Ask: $${stk.ask}, IV: ${(stk.impliedVolatility*100).toFixed(1)}%)`;
-                strikeSelect.appendChild(opt);
-            });
-            autoAlignMA20();
-        }
-
-        function autoAlignMA20() {
-            const strikeSelect = document.getElementById('strikeSelect');
-            if (strikeSelect.options.length === 0) return;
-            let closestIdx = 0, minDiff = 999999;
-            for (let i = 0; i < strikeSelect.options.length; i++) {
-                const stk = JSON.parse(strikeSelect.options[i].value);
-                const diff = Math.abs(stk.strike - currentMA20);
-                if (diff < minDiff) { minDiff = diff; closestIdx = i; }
-            }
-            strikeSelect.selectedIndex = closestIdx;
-            onStrikeChange();
-        }
-
-        function onStrikeChange() {
-            const val = document.getElementById('strikeSelect').value;
-            if(!val) return;
-            const stk = JSON.parse(val);
-            const exp = document.getElementById('expDateSelect').value;
-            const strat = document.getElementById('strategySelect').value;
-            const optType = ['cc', 'long_call', 'bull_call'].includes(strat) ? 'call' : 'put';
-            const days = Math.max(1, Math.floor((new Date(exp) - new Date()) / (1000 * 60 * 60 * 24)));
-            const T = days / 365.0;
-            const sigma = stk.impliedVolatility > 0 ? stk.impliedVolatility : 0.35;
-
-            fetch(`/api/greeks?S=${currentSpot}&K=${stk.strike}&T=${T}&sigma=${sigma}&type=${optType}`)
-                .then(res => res.json())
-                .then(g => {
-                    document.getElementById('valDelta').innerText = g.delta;
-                    document.getElementById('valTheta').innerText = g.theta;
-                    document.getElementById('valGamma').innerText = g.gamma;
-                    document.getElementById('valVega').innerText = g.vega;
-                });
-
-            drawPayoffDiagram(stk.strike, (stk.bid + stk.ask) / 2, strat);
-        }
-
-        function drawPayoffDiagram(strike, premium, strategy) {
-            const canvas = document.getElementById('payoffCanvas');
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            const w = canvas.width, h = canvas.height;
-            const minP = strike * 0.75, maxP = strike * 1.25;
-
-            ctx.strokeStyle = '#cbd5e1';
-            ctx.beginPath();
-            ctx.moveTo(0, h / 2);
-            ctx.lineTo(w, h / 2);
-            ctx.stroke();
-
-            ctx.strokeStyle = '#38bdf8';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-
-            let maxProfit = '--', maxLoss = '--';
-
-            if (strategy === 'csp') {
-                maxProfit = `+$${(premium * 100).toFixed(0)}`;
-                maxLoss = `-$${((strike - premium) * 100).toFixed(0)}`;
-            } else if (strategy === 'cc') {
-                maxProfit = `+$${((strike - currentSpot + premium) * 100).toFixed(0)}`;
-                maxLoss = `-$${((currentSpot - premium) * 100).toFixed(0)}`;
-            } else if (strategy === 'long_call') {
-                maxProfit = `無限大 (Long Call)`;
-                maxLoss = `-$${(premium * 100).toFixed(0)}`;
-            } else if (strategy === 'long_put') {
-                maxProfit = `+$${((strike - premium) * 100).toFixed(0)}`;
-                maxLoss = `-$${(premium * 100).toFixed(0)}`;
-            } else if (strategy === 'bull_call') {
-                const spreadWidth = strike * 0.05;
-                maxProfit = `+$${((spreadWidth - premium) * 100).toFixed(0)}`;
-                maxLoss = `-$${(premium * 100).toFixed(0)}`;
-            } else if (strategy === 'bear_put') {
-                const spreadWidth = strike * 0.05;
-                maxProfit = `+$${((spreadWidth - premium) * 100).toFixed(0)}`;
-                maxLoss = `-$${(premium * 100).toFixed(0)}`;
-            } else if (strategy === 'bull_put') {
-                const spreadWidth = strike * 0.05;
-                maxProfit = `+$${(premium * 100).toFixed(0)}`;
-                maxLoss = `-$${((spreadWidth - premium) * 100).toFixed(0)}`;
-            } else if (strategy === 'straddle') {
-                maxProfit = `無限大 (雙向大波動)`;
-                maxLoss = `-$${(premium * 2 * 100).toFixed(0)}`;
-            }
-
-            document.getElementById('payoffMax').innerText = maxProfit;
-            document.getElementById('payoffMin').innerText = maxLoss;
-
-            for (let x = 0; x < w; x++) {
-                const p = minP + (x / w) * (maxP - minP);
-                let profit = 0;
-
-                if (strategy === 'csp') profit = p >= strike ? premium : premium - (strike - p);
-                else if (strategy === 'cc') profit = p <= strike ? premium : premium - (p - strike);
-                else if (strategy === 'long_call') profit = p >= strike ? (p - strike) - premium : -premium;
-                else if (strategy === 'long_put') profit = p <= strike ? (strike - p) - premium : -premium;
-                else if (strategy === 'bull_call') {
-                    const upper = strike * 1.05;
-                    profit = Math.min(Math.max(p - strike, 0), upper - strike) - premium;
-                } else if (strategy === 'bear_put') {
-                    const lower = strike * 0.95;
-                    profit = Math.min(Math.max(strike - p, 0), strike - lower) - premium;
-                } else if (strategy === 'bull_put') {
-                    const lower = strike * 0.95;
-                    profit = premium - Math.min(Math.max(strike - p, 0), strike - lower);
-                } else if (strategy === 'straddle') {
-                    profit = Math.abs(p - strike) - (premium * 1.8);
-                }
-
-                const y = (h / 2) - (profit * 2.2);
-                if (x === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-            }
-            ctx.stroke();
-        }
-
-        function calculateOptionStrategy() {
-            const val = document.getElementById('strikeSelect').value;
-            if(!val) return;
-            const stk = JSON.parse(val);
-            const safetyBuffer = ((currentSpot - stk.strike) / currentSpot * 100).toFixed(2);
-            alert(`[V9.8 智慧風控檢核]\\n標的: ${currentSymbol} | 履約價: $${stk.strike.toFixed(2)}\\n安全邊際緩衝: ${safetyBuffer}% (${safetyBuffer >= 8 ? '安全合格' : '警戒過窄'})`);
-        }
-
-        async function sendCloudPush() {
-            const val = document.getElementById('strikeSelect').value;
-            const stk = val ? JSON.parse(val) : { strike: currentSpot * 0.95 };
-            const strat = document.getElementById('strategySelect').value;
-            
-            try {
-                const res = await fetch('/api/line/push', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ symbol: currentSymbol, strike: stk.strike, strategy: strat })
-                });
-                const result = await res.json();
-                document.getElementById('linePreviewText').innerText = result.preview_text;
-                document.getElementById('lineModal').classList.remove('hidden');
-            } catch(e) {
-                alert('推播發送失敗');
-            }
-        }
-
-        function closeLineModal() { document.getElementById('lineModal').classList.add('hidden'); }
-        
-        function changeInterval(intv) {
-            currentInterval = intv;
-            ['1d', '1wk', '1mo'].forEach(k => {
-                const btn = document.getElementById(`btn_${k}`);
-                if (k === intv) {
-                    btn.className = "px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950 transition";
-                } else {
-                    btn.className = "px-2.5 py-0.5 rounded font-bold text-muted hover:opacity-100 transition";
-                }
-            });
-            fetchStockData(currentSymbol);
-        }
-
-        window.onload = () => {
-            fetchIndicesData();
-            loadScreenerList();
-            fetchStockData("PLTR");
-        };
-    </script>
+window.onload = () => {
+  try {
+    const t = localStorage.getItem('us_theme'); if (t) switchTheme(t);
+    setFontSize(localStorage.getItem('us_font') || 'large');
+  } catch (e) { setFontSize('large'); }
+  if (isTouch) document.getElementById('touchHint').classList.remove('hidden');
+  fetchIndicesData();
+  loadScreenerList();
+  fetchStockData(currentSymbol);
+};
+</script>
 </body>
 </html>
 """
 
+
 @app.get("/", response_class=HTMLResponse)
 def serve_index():
     return HTMLResponse(content=HTML_CONTENT, status_code=200)
-
-@app.get("/api/market/indices")
-def get_indices():
-    indices_map = {"dji": "^DJI", "ixic": "^IXIC", "sox": "^SOX", "spx": "^GSPC", "vix": "^VIX"}
-    results = {}
-    for k, sym in indices_map.items():
-        try:
-            t = yf.Ticker(sym)
-            df = t.history(period="5d")
-            c = float(df['Close'].iloc[-1])
-            prev_c = float(df['Close'].iloc[-2])
-            chg = round(c - prev_c, 2)
-            pct = round((chg / prev_c) * 100.0, 2)
-            if k == "vix":
-                status = "恐慌警戒" if c > 20 else "正常平穩"
-                results[k] = {"close": round(c, 2), "chg": chg, "pct": pct, "status": status}
-            else:
-                results[k] = {"close": int(round(c)), "chg": chg, "pct": pct}
-        except:
-            results[k] = {"close": 0, "chg": 0.0, "pct": 0.0, "status": "—"}
-    return results
-
-@app.get("/api/screener")
-def run_v98_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, vol_ratio: float = 1.2):
-    target_pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
-    results = []
-    
-    for item in target_pool[:30]:
-        sym = item["symbol"]
-        try:
-            t = yf.Ticker(sym)
-            df = t.history(period="3mo")
-            if df.empty or len(df) < (neck_days + 5):
-                continue
-            c = float(df['Close'].iloc[-1])
-            o = float(df['Open'].iloc[-1])
-            v = float(df['Volume'].iloc[-1])
-            v_ma5 = float(df['Volume'].shift(1).rolling(5).mean().iloc[-1])
-            ma20 = float(df['Close'].rolling(20).mean().iloc[-1])
-            
-            high_neck = float(df['High'].iloc[-(neck_days+1):-1].max())
-            low_neck = float(df['Low'].iloc[-(neck_days+1):-1].min())
-            cur_v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
-
-            if mode == "LONG":
-                if not (c > high_neck and c > o and c > ma20 and cur_v_ratio >= vol_ratio):
-                    continue
-                dist_neck = round(((c / high_neck) - 1.0) * 100.0, 1)
-                score = "🔥 暴量突破"
-            else:
-                if not (c < low_neck and c < o and c < ma20 and cur_v_ratio >= vol_ratio):
-                    continue
-                dist_neck = round(((c / low_neck) - 1.0) * 100.0, 1)
-                score = "⚡ 破底轉弱"
-                
-            results.append({
-                "symbol": sym, "name": item["name"], "sector": item["sector"],
-                "score": score, "dist_neck_pct": dist_neck, "v_ratio": cur_v_ratio
-            })
-        except:
-            continue
-    return {"screener_list": results}
-
-@app.get("/api/quote/{symbol}")
-def get_quote_data(symbol: str, interval: str = "1d"):
-    if interval == "1mo":
-        period = "10y"
-    elif interval == "1wk":
-        period = "3y"
-    else:
-        period = "1y"
-
-    ticker = yf.Ticker(symbol.strip().upper())
-    df = ticker.history(period=period, interval=interval)
-    if df.empty:
-        raise HTTPException(status_code=404, detail="Symbol not found")
-
-    df['MA5'] = df['Close'].rolling(window=5, min_periods=1).mean()
-    df['MA10'] = df['Close'].rolling(window=10, min_periods=1).mean()
-    df['MA20'] = df['Close'].rolling(window=20, min_periods=1).mean()
-    df['MA60'] = df['Close'].rolling(window=60, min_periods=1).mean()
-    df['MA120'] = df['Close'].rolling(window=120, min_periods=1).mean()
-    df['MA240'] = df['Close'].rolling(window=240, min_periods=1).mean()
-    
-    bb_std = df['Close'].rolling(window=20, min_periods=5).std(ddof=0).fillna(0)
-    df['BB_UP'] = df['MA20'] + 2.0 * bb_std
-    df['BB_LOW'] = df['MA20'] - 2.0 * bb_std
-
-    df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=1).mean()
-
-    low9 = df['Low'].rolling(9, min_periods=1).min()
-    high9 = df['High'].rolling(9, min_periods=1).max()
-    rsv = ((df['Close'] - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
-    k_vals, d_vals = [], []
-    k_prev, d_prev = 50.0, 50.0
-    for val in rsv:
-        k_curr = (2.0 / 3.0) * k_prev + (1.0 / 3.0) * float(val)
-        d_curr = (2.0 / 3.0) * d_prev + (1.0 / 3.0) * k_curr
-        k_vals.append(round(k_curr, 1))
-        d_vals.append(round(d_curr, 1))
-        k_prev, d_prev = k_curr, d_curr
-    df['K'] = k_vals
-    df['D'] = d_vals
-
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['DIF'] = ema12 - ema26
-    df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()
-    df['MACD_HIST'] = df['DIF'] - df['DEA']
-
-    df = df.dropna(subset=['Close'])
-    spot = float(round(df['Close'].iloc[-1], 2))
-    prev_spot = float(round(df['Close'].iloc[-2], 2)) if len(df) >= 2 else spot
-    chg = round(spot - prev_spot, 2)
-    pct = round((chg / prev_spot) * 100.0, 2) if prev_spot > 0 else 0.0
-
-    ma20_val = float(round(df['MA20'].iloc[-1], 2))
-    ma240_val = float(round(df['MA240'].iloc[-1], 2)) if not pd.isna(df['MA240'].iloc[-1]) else spot
-    
-    neck_slice = df['High'].iloc[-21:-1] if len(df) > 21 else df['High']
-    neckline = float(round(neck_slice.max(), 2))
-    dist_neck = round(((spot / neckline) - 1.0) * 100.0, 1) if neckline > 0 else 0.0
-
-    quality_badge = "🛡️ 距頸線 ≤ 5% 且站上月線" if dist_neck <= 5.0 and spot >= ma20_val else "⚠️ 乖離偏遠或月線下"
-
-    dates = [d.strftime("%Y-%m-%d") for d in df.index]
-    opens = [float(round(v, 2)) for v in df["Open"].values]
-    highs = [float(round(v, 2)) for v in df["High"].values]
-    lows = [float(round(v, 2)) for v in df["Low"].values]
-    closes = [float(round(v, 2)) for v in df["Close"].values]
-    volumes = [int(v) for v in df["Volume"].values]
-
-    def _clean_series(s):
-        return [float(round(v, 2)) if not pd.isna(v) else None for v in s.values]
-
-    sym_clean = symbol.strip().upper()
-    name_str = sym_clean
-    exchange_str = "US"
-    
-    for it in MARKET_UNIVERSE:
-        if it["symbol"] == sym_clean:
-            name_str = it["name"]
-            exchange_str = it["market"]
-            break
-
-    if name_str == sym_clean:
-        try:
-            info = ticker.info
-            name_str = info.get('shortName') or info.get('longName') or sym_clean
-            exchange_str = info.get('exchange', 'US')
-        except:
-            pass
-
-    return {
-        "symbol": sym_clean,
-        "name": name_str,
-        "exchange": exchange_str,
-        "spot": spot,
-        "chg": chg,
-        "pct": pct,
-        "ma20_val": ma20_val,
-        "ma240_val": ma240_val,
-        "neckline": neckline,
-        "dist_neck": dist_neck,
-        "quality_badge": quality_badge,
-        "dates": dates,
-        "opens": opens,
-        "highs": highs,
-        "lows": lows,
-        "closes": closes,
-        "volumes": volumes,
-        "ma5": _clean_series(df["MA5"]),
-        "ma10": _clean_series(df["MA10"]),
-        "ma20": _clean_series(df["MA20"]),
-        "ma60": _clean_series(df["MA60"]),
-        "ma120": _clean_series(df["MA120"]),
-        "ma240": _clean_series(df["MA240"]),
-        "bb_up": _clean_series(df["BB_UP"]),
-        "bb_low": _clean_series(df["BB_LOW"]),
-        "vol_ma5": _clean_series(df["Vol_MA5"]),
-        "k": _clean_series(df["K"]),
-        "d": _clean_series(df["D"]),
-        "macd_hist": _clean_series(df["MACD_HIST"]),
-        "macd_dif": _clean_series(df["DIF"]),
-        "macd_dea": _clean_series(df["DEA"])
-    }
-
-@app.get("/api/options/{symbol}")
-def get_options(symbol: str):
-    ticker = yf.Ticker(symbol.strip().upper())
-    expirations = ticker.options
-    
-    if expirations and len(expirations) > 0:
-        chain_data = {}
-        for exp in expirations:
-            try:
-                opt_chain = ticker.option_chain(exp)
-                puts, calls = [], []
-                for _, r in opt_chain.puts.iterrows():
-                    puts.append({
-                        "strike": float(r["strike"]),
-                        "bid": float(r["bid"]) if not pd.isna(r["bid"]) else 0.0,
-                        "ask": float(r["ask"]) if not pd.isna(r["ask"]) else 0.0,
-                        "impliedVolatility": float(r["impliedVolatility"]) if not pd.isna(r["impliedVolatility"]) else 0.35
-                    })
-                for _, r in opt_chain.calls.iterrows():
-                    calls.append({
-                        "strike": float(r["strike"]),
-                        "bid": float(r["bid"]) if not pd.isna(r["bid"]) else 0.0,
-                        "ask": float(r["ask"]) if not pd.isna(r["ask"]) else 0.0,
-                        "impliedVolatility": float(r["impliedVolatility"]) if not pd.isna(r["impliedVolatility"]) else 0.35
-                    })
-                chain_data[exp] = {"puts": puts, "calls": calls}
-            except:
-                continue
-        return {"expirations": list(chain_data.keys()), "chain": chain_data}
-    
-    return {"expirations": [], "chain": {}}
-
-@app.get("/api/greeks")
-def get_greeks(S: float, K: float, T: float, sigma: float, type: str = "put"):
-    return calculate_greeks(S, K, T, 0.045, sigma, type)
-
-@app.post("/api/line/push")
-def line_push(payload: dict):
-    sym = payload.get("symbol", "PLTR")
-    strike = payload.get("strike", 0.0)
-    strat = payload.get("strategy", "CSP").upper()
-    
-    ticker = yf.Ticker(sym)
-    df = ticker.history(period="3mo")
-    spot = float(df['Close'].iloc[-1])
-    prev_spot = float(df['Close'].iloc[-2]) if len(df) >= 2 else spot
-    pct = round(((spot - prev_spot) / prev_spot) * 100.0, 2) if prev_spot > 0 else 0.0
-    p_sign = "▲" if pct >= 0 else "▼"
-
-    ma20 = float(df['Close'].rolling(20).mean().iloc[-1])
-    neckline = float(df['High'].iloc[-21:-1].max())
-    dist_neck = round(((spot / neckline) - 1.0) * 100.0, 1)
-
-    text_report = (
-        f"📈【美股多空雷達 V9.8｜機構戰報】\n"
-        f"🕒 資料時間：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"🌡️ 標的：{sym} 現價 ${spot:.2f} ({p_sign}{abs(pct)}%)\n"
-        f"📏 距20日頸線 (${neckline:.2f})：{dist_neck:+.1f}%\n"
-        f"🧭 月線 (MA20)：${ma20:.2f} (站穩支撐)\n"
-        f"🛡️ 停損參考位：頸線 ${neckline:.2f} ／ 月線 ${ma20:.2f}\n"
-        f"⚡ 期權策略：{strat} (目標 Strike ${float(strike):.2f})\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"※ 僅為 V9.8 量化條件篩選結果，非投資建議。"
-    )
-
-    if LINE_CHANNEL_ACCESS_TOKEN and LINE_USER_ID:
-        url = "https://api.line.me/v2/bot/message/push"
-        headers = {
-            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "to": LINE_USER_ID,
-            "messages": [{"type": "text", "text": text_report}]
-        }
-        try:
-            requests.post(url, headers=headers, json=data, timeout=8)
-        except Exception:
-            pass
-
-    return {"status": "success", "preview_text": text_report}
