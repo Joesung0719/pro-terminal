@@ -165,7 +165,7 @@ HTML_CONTENT = """
             </div>
         </div>
 
-        <!-- ⚙️ 可收合設定抽屜 (對齊台股 V9.8) -->
+        <!-- ⚙️ 可收合設定抽屜 -->
         <div id="settingsDrawer" class="hidden bg-[#0b0e14] border border-theme rounded-lg p-3 mt-1.5 text-xs space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-3 border-b border-theme pb-2">
                 <div class="flex items-center space-x-2">
@@ -237,14 +237,16 @@ HTML_CONTENT = """
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：圖表區域 -->
+        <!-- 中間：圖表區域 (含日K / 週K / 月K 完整切換) -->
         <main id="centerMain" class="flex-1 flex flex-col p-3 overflow-y-auto">
             <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
                 <div class="flex items-center space-x-2">
                     <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">載入中...</h1>
+                    <!-- ⭐ 日K / 週K / 月K 三段切換膠囊按鈕組 -->
                     <div class="flex bg-card border border-theme rounded p-0.5 space-x-1 text-xs">
-                        <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
-                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white">週K</button>
+                        <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950 transition">日K</button>
+                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white transition">週K</button>
+                        <button onclick="changeInterval('1mo')" id="btn_1mo" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white transition">月K</button>
                     </div>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -379,7 +381,7 @@ HTML_CONTENT = """
         </aside>
     </div>
 
-    <!-- 📜 歷次改版紀錄 Modal (對齊台股 V9.8) -->
+    <!-- 📜 歷次改版紀錄 Modal -->
     <div id="changeLogModal" class="fixed inset-0 bg-black/80 flex items-center justify-center hidden z-50 p-4">
         <div class="bg-card border border-theme rounded-2xl p-6 w-full max-w-xl shadow-2xl space-y-4">
             <div class="flex justify-between items-center border-b border-theme pb-2">
@@ -393,6 +395,7 @@ HTML_CONTENT = """
                 <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
                     <div class="font-bold text-white text-sm">V9.8 旗艦完全體 (2026-10-17)</div>
                     <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
+                        <li>新增「月K」長線視角（日K / 週K / 月K 全面支援）。</li>
                         <li>全面導入 Plotly 專業多層圖表，原汁原味整合中文畫趨勢線、方框與橡皮擦。</li>
                         <li>四圖（K線/布林、成交量、KD、MACD）共用 X 軸完全同步縮放與平移。</li>
                         <li>補齊 120MA（桃紅）並支援均線即時膠囊開關切換。</li>
@@ -439,7 +442,7 @@ HTML_CONTENT = """
     <script>
         let currentSpot = 0, currentMA20 = 0, currentMA240 = 0, currentNeckline = 0;
         let currentSymbol = "PLTR";
-        let currentInterval = "1d";
+        let currentInterval = "1d"; // 1d, 1wk, 1mo
         let currentOptionData = null;
         let currentSector = "ALL";
         let currentRadarMode = "LONG";
@@ -565,7 +568,6 @@ HTML_CONTENT = """
             if (currentRawData) renderPlotlyChart(currentRawData);
         }
 
-        // ⭐ 控制 Plotly 畫線模式
         function setPlotlyMode(mode) {
             const el = document.getElementById('plotlyChartContainer');
             if (!el || !el._fullLayout) return;
@@ -587,7 +589,6 @@ HTML_CONTENT = """
             const dates = data.dates;
             const traces = [];
 
-            // 取得當前主題背景色
             const isSlate = document.getElementById('bodyRoot').classList.contains('theme-slate');
             const isPureDark = document.getElementById('bodyRoot').classList.contains('theme-dark');
             const paperBg = isSlate ? '#1e293b' : (isPureDark ? '#0d0d0d' : '#121824');
@@ -653,7 +654,7 @@ HTML_CONTENT = """
 
             const config = {
                 responsive: true,
-                displayModeBar: false // 隱藏原生工具列，完全由中央中文列控制
+                displayModeBar: false
             };
 
             Plotly.newPlot('plotlyChartContainer', traces, layout, config);
@@ -671,7 +672,8 @@ HTML_CONTENT = """
                     currentMA240 = data.ma240_val;
                     currentNeckline = data.neckline;
 
-                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name} [${data.exchange}]`;
+                    const intvName = currentInterval === '1d' ? '日K' : (currentInterval === '1wk' ? '週K' : '月K');
+                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name} [${data.exchange}] (${intvName})`;
                     
                     const pSign = data.chg >= 0 ? '▲' : '▼';
                     const pColor = data.chg >= 0 ? '#C0392B' : '#1E7E5A';
@@ -690,7 +692,6 @@ HTML_CONTENT = """
             }
         }
 
-        // ⭐ 真實期權鏈直通，絕不偽造
         async function loadOptionChain(symbol) {
             const expSelect = document.getElementById('expDateSelect');
             const strikeSelect = document.getElementById('strikeSelect');
@@ -882,7 +883,20 @@ HTML_CONTENT = """
         }
 
         function closeLineModal() { document.getElementById('lineModal').classList.add('hidden'); }
-        function changeInterval(intv) { currentInterval = intv; fetchStockData(currentSymbol); }
+        
+        // ⭐ 日K / 週K / 月K 切換事件
+        function changeInterval(intv) {
+            currentInterval = intv;
+            ['1d', '1wk', '1mo'].forEach(k => {
+                const btn = document.getElementById(`btn_${k}`);
+                if (k === intv) {
+                    btn.className = "px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950 transition";
+                } else {
+                    btn.className = "px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white transition";
+                }
+            });
+            fetchStockData(currentSymbol);
+        }
 
         window.onload = () => {
             fetchIndicesData();
@@ -962,27 +976,38 @@ def run_v98_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 2
 
 @app.get("/api/quote/{symbol}")
 def get_quote_data(symbol: str, interval: str = "1d"):
-    period = "2y" if interval == "1wk" else "1y"
+    # ⭐ 根據週期設定拉取足夠長度的歷史數據
+    if interval == "1mo":
+        period = "10y"
+    elif interval == "1wk":
+        period = "3y"
+    else:
+        period = "1y"
+
     ticker = yf.Ticker(symbol.strip().upper())
     df = ticker.history(period=period, interval=interval)
     if df.empty:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    df['MA5'] = df['Close'].rolling(window=5).mean()
-    df['MA10'] = df['Close'].rolling(window=10).mean()
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA60'] = df['Close'].rolling(window=60).mean()
-    df['MA120'] = df['Close'].rolling(window=120, min_periods=30).mean()
-    df['MA240'] = df['Close'].rolling(window=240, min_periods=60).mean()
+    # 均線系統
+    df['MA5'] = df['Close'].rolling(window=5, min_periods=1).mean()
+    df['MA10'] = df['Close'].rolling(window=10, min_periods=1).mean()
+    df['MA20'] = df['Close'].rolling(window=20, min_periods=1).mean()
+    df['MA60'] = df['Close'].rolling(window=60, min_periods=1).mean()
+    df['MA120'] = df['Close'].rolling(window=120, min_periods=1).mean()
+    df['MA240'] = df['Close'].rolling(window=240, min_periods=1).mean()
     
-    bb_std = df['Close'].rolling(window=20).std(ddof=0)
+    # 布林通道 (20MA +- 2*STD)
+    bb_std = df['Close'].rolling(window=20, min_periods=5).std(ddof=0).fillna(0)
     df['BB_UP'] = df['MA20'] + 2.0 * bb_std
     df['BB_LOW'] = df['MA20'] - 2.0 * bb_std
 
-    df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=3).mean()
+    # 5 週期均量
+    df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=1).mean()
 
-    low9 = df['Low'].rolling(9, min_periods=9).min()
-    high9 = df['High'].rolling(9, min_periods=9).max()
+    # KD (9, 3, 3)
+    low9 = df['Low'].rolling(9, min_periods=1).min()
+    high9 = df['High'].rolling(9, min_periods=1).max()
     rsv = ((df['Close'] - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
     k_vals, d_vals = [], []
     k_prev, d_prev = 50.0, 50.0
@@ -995,6 +1020,7 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     df['K'] = k_vals
     df['D'] = d_vals
 
+    # MACD (12, 26, 9)
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['DIF'] = ema12 - ema26
@@ -1009,8 +1035,10 @@ def get_quote_data(symbol: str, interval: str = "1d"):
 
     ma20_val = float(round(df['MA20'].iloc[-1], 2))
     ma240_val = float(round(df['MA240'].iloc[-1], 2)) if not pd.isna(df['MA240'].iloc[-1]) else spot
-    neckline = float(round(df['High'].iloc[-21:-1].max(), 2))
-    dist_neck = round(((spot / neckline) - 1.0) * 100.0, 1)
+    
+    neck_slice = df['High'].iloc[-21:-1] if len(df) > 21 else df['High']
+    neckline = float(round(neck_slice.max(), 2))
+    dist_neck = round(((spot / neckline) - 1.0) * 100.0, 1) if neckline > 0 else 0.0
 
     quality_badge = "🛡️ 距頸線 ≤ 5% 且站上月線" if dist_neck <= 5.0 and spot >= ma20_val else "⚠️ 乖離偏遠或月線下"
 
