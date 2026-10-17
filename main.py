@@ -9,7 +9,7 @@ import requests
 import datetime
 import os
 
-app = FastAPI(title="US Professional Radar War Room - V9.8 True Color Edition")
+app = FastAPI(title="US Professional Radar War Room - V9.8 True Mobile Edition")
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,168 +68,200 @@ HTML_CONTENT = """
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>美股多空雷達戰情室 V9.8 ｜ 100% 台股標準線形</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>美股多空雷達戰情室 V9.8 ｜ 行動與桌機完全自適應</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        /* 手機版響應式重定義 */
+        @media (max-width: 1024px) {
+            #mainLayout {
+                flex-direction: column !important;
+                height: auto !important;
+                overflow-y: auto !important;
+            }
+            #leftSidebar, #rightSidebar, #centerMain {
+                width: 100% !important;
+                height: auto !important;
+                border-right: none !important;
+                border-left: none !important;
+                border-bottom: 1px solid #1e293b !important;
+            }
+            #centerMain {
+                order: 1 !important; /* 手機優先看圖表 */
+            }
+            #rightSidebar {
+                order: 2 !important; /* 其次看期權與推播 */
+            }
+            #leftSidebar {
+                order: 3 !important; /* 最後為股票名單 */
+                max-height: 480px !important;
+            }
+            .grid-indices {
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            }
+            .grid-indices > div:last-child {
+                grid-column: span 2 / span 2 !important;
+            }
+            body {
+                overflow-y: auto !important;
+                height: auto !important;
+            }
+        }
+    </style>
 </head>
-<body class="bg-[#0b0e14] text-[#e2e8f0] font-sans antialiased h-screen flex flex-col overflow-hidden">
+<body class="bg-[#0b0e14] text-[#e2e8f0] font-sans antialiased min-h-screen flex flex-col">
     <!-- 頂部大盤溫度計全市場看板 -->
-    <header class="bg-[#121824] border-b border-[#1e293b] px-4 py-2 flex flex-col gap-1.5 shadow-lg">
+    <header class="bg-[#121824] border-b border-[#1e293b] px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
         <div class="flex justify-between items-center">
-            <div class="flex items-center space-x-3">
-                <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8 旗艦版</span>
-                <span class="text-xs bg-[#1e293b] text-amber-400 px-2.5 py-0.5 rounded-full font-bold border border-amber-500/30">台股 V9.8 規格全色彩線形移植</span>
+            <div class="flex items-center space-x-2">
+                <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8</span>
+                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">手機完全適配</span>
             </div>
-            <div class="flex items-center space-x-3 text-xs">
-                <span id="marketSessionTag" class="text-slate-400">市場狀態：美股盤後結算</span>
-                <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-0.5 rounded border border-[#38bdf8]/40 font-bold">🔄 刷新溫度計</button>
-            </div>
+            <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold shrink-0">🔄 刷新</button>
         </div>
 
         <!-- 五大指數多空溫度計 -->
-        <div class="grid grid-cols-5 gap-2 text-xs font-mono">
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">🏛️ 道瓊 (DJI)</span>
+        <div class="grid grid-cols-5 grid-indices gap-1.5 text-xs font-mono">
+            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-slate-400 font-bold">🏛️ 道瓊</span>
                 <span id="idx_dji" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">💻 那指 (IXIC)</span>
+            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-slate-400 font-bold">💻 那指</span>
                 <span id="idx_ixic" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">⚡ 費半 (SOX)</span>
+            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-slate-400 font-bold">⚡ 費半</span>
                 <span id="idx_sox" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
-                <span class="text-slate-400 font-bold">📊 標普 (SPX)</span>
+            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-slate-400 font-bold">📊 標普</span>
                 <span id="idx_spx" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
-                <span class="text-amber-400 font-bold">🔥 恐慌 (VIX)</span>
+            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+                <span class="text-amber-400 font-bold">🔥 恐慌</span>
                 <span id="idx_vix" class="font-bold text-amber-400">--</span>
             </div>
         </div>
     </header>
 
-    <!-- 主體區域 -->
-    <div class="flex flex-1 overflow-hidden">
-        <!-- 左側：市場板塊分類與清單 -->
-        <aside class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col">
+    <!-- 主體區域：在手機上自動改為垂直流式單欄，桌機維持三欄並排 -->
+    <div id="mainLayout" class="flex flex-1 overflow-hidden">
+        <!-- 股票清單 (手機自動排在最下方) -->
+        <aside id="leftSidebar" class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col shrink-0">
             <div class="p-3 border-b border-[#1e293b] space-y-2">
                 <div class="flex justify-between items-center">
                     <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">🎯 市場板塊分類</h2>
                     <span class="text-[10px] text-emerald-400 font-bold bg-[#0b0e14] px-1.5 py-0.5 rounded border border-emerald-500/30">V9.8 爆量突破</span>
                 </div>
-                <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
+                <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
                     <option value="ALL">🌐 全市場精選大池 (全部標的)</option>
                     <option value="SOX">⚡ 費城半導體 (SOX / 晶片軍火)</option>
                     <option value="NASDAQ">💻 那斯達克 100 (科技核心主力)</option>
                     <option value="DOW">🏛️ 道瓊工業 30 (傳統藍籌防守)</option>
-                    <option value="NYSE">💼 紐約證交所主力 (金融/能源/國防)</option>
+                    <option value="NYSE">💼 紐約證交所主力 (金融/能源)</option>
                     <option value="ETF">📊 全美主力 ETF (標普/費半)</option>
                 </select>
 
                 <div class="flex gap-2">
-                    <input id="customSymbol" type="text" placeholder="輸入美股代號 (例: PLTR, TSM)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-xs text-white uppercase focus:outline-none focus:border-[#38bdf8]">
+                    <input id="customSymbol" type="text" placeholder="輸入代號 (例: PLTR, TSM)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-xs text-white uppercase focus:outline-none focus:border-[#38bdf8]">
                     <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-xs transition">診斷</button>
                 </div>
             </div>
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：台股 V9.8 規格 K線圖與雙副圖 -->
-        <main class="flex-1 flex flex-col bg-[#0b0e14] p-3 overflow-y-auto">
-            <div class="flex justify-between items-center mb-2">
-                <div class="flex items-center space-x-3">
-                    <h1 id="chartTitle" class="text-xl font-black text-white tracking-wide">PLTR 帕蘭蒂爾科技</h1>
+        <!-- 中間：圖表區域 (手機置頂滿版) -->
+        <main id="centerMain" class="flex-1 flex flex-col bg-[#0b0e14] p-3 overflow-y-auto">
+            <div class="flex flex-wrap justify-between items-center gap-2 mb-2">
+                <div class="flex items-center space-x-2">
+                    <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">PLTR 帕蘭蒂爾科技</h1>
                     <div class="flex bg-[#121824] border border-[#1e293b] rounded p-0.5 space-x-1 text-xs">
-                        <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
-                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white">週K</button>
+                        <button onclick="changeInterval('1d')" id="btn_1d" class="px-2 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
+                        <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2 py-0.5 rounded font-bold text-slate-400 hover:text-white">週K</button>
                     </div>
                 </div>
-                <div class="flex items-center space-x-3">
-                    <div id="qualityTag" class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded border border-emerald-500/40 font-bold">
-                        🛡️ 距頸線 ≤ 5% 且站上月線
+                <div class="flex items-center space-x-2">
+                    <div id="qualityTag" class="text-[10px] md:text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">
+                        🛡️ 距頸線 ≤ 5%
                     </div>
-                    <div id="currentPriceTag" class="text-base font-bold text-emerald-400 bg-[#121824] px-3 py-1 rounded-lg border border-[#1e293b] shadow">
+                    <div id="currentPriceTag" class="text-sm md:text-base font-bold text-emerald-400 bg-[#121824] px-2.5 py-0.5 rounded-lg border border-[#1e293b] shadow">
                         收盤: $--
                     </div>
                 </div>
             </div>
 
-            <!-- V9.8 均線膠囊式顏色對齊 Legend 面板 -->
-            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-3 py-1.5 rounded mb-2 text-xs flex flex-wrap gap-x-3.5 gap-y-1 font-mono text-slate-300">
+            <!-- V9.8 均線數值 Legend 面板 -->
+            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-2.5 py-1.5 rounded mb-2 text-[11px] md:text-xs flex flex-wrap gap-x-2.5 gap-y-1 font-mono text-slate-300">
                 <span>開: <strong id="legOpen" class="text-white">--</strong></span>
                 <span>高: <strong id="legHigh" class="text-white">--</strong></span>
                 <span>低: <strong id="legLow" class="text-white">--</strong></span>
                 <span>收: <strong id="legClose" class="text-emerald-400">--</strong></span>
-                <span>量: <strong id="legVol" class="text-white">--</strong></span>
-                <!-- 台股 V9.8 均線色彩標準 -->
-                <span style="color: #D97706;">5MA(橘): <strong id="legMA5">--</strong></span>
-                <span style="color: #2563EB;">10MA(藍): <strong id="legMA10">--</strong></span>
-                <span style="color: #7C3AED;">20MA(紫): <strong id="legMA20">--</strong></span>
-                <span style="color: #0D9488;">60MA(綠): <strong id="legMA60">--</strong></span>
-                <span style="color: #334155;">240MA(年線): <strong id="legMA240">--</strong></span>
+                <span style="color: #D97706;">5MA: <strong id="legMA5">--</strong></span>
+                <span style="color: #7C3AED;">20MA(月): <strong id="legMA20">--</strong></span>
+                <span style="color: #0D9488;">60MA(季): <strong id="legMA60">--</strong></span>
                 <span style="color: #B45309;">頸線: <strong id="legNeck">--</strong></span>
             </div>
 
-            <!-- 主圖 K線 (MA5/10/20/60/240 + 頸線) -->
-            <div class="bg-[#121824] border border-[#1e293b] rounded-t-xl p-2 h-[330px] flex flex-col">
+            <!-- 主圖 K線 (手機保證 100% 寬度) -->
+            <div class="bg-[#121824] border border-[#1e293b] rounded-t-xl p-2 h-[290px] md:h-[330px] flex flex-col w-full">
                 <div id="mainChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 1: 成交量 ＋ 台股 5日均量線 -->
-            <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[115px] flex flex-col border-t border-[#1e293b]/50">
-                <div class="text-[10px] text-slate-400 font-bold mb-0.5">📊 成交量 ＆ 5日均量線 (Vol-MA5 橘褐點線)</div>
+            <!-- 副圖 1: 成交量 ＋ 5日均量線 -->
+            <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[95px] flex flex-col border-t border-[#1e293b]/50 w-full">
+                <div class="text-[10px] text-slate-400 font-bold mb-0.5">📊 成交量 ＆ 5日均量線 (Vol-MA5 橘褐)</div>
                 <div id="volChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 2: 台股 KD(9,3,3) 震盪指標 -->
-            <div class="bg-[#121824] border-x border-b border-[#1e293b] rounded-b-xl p-2 h-[115px] flex flex-col border-t border-[#1e293b]/50">
+            <!-- 副圖 2: KD(9,3) -->
+            <div class="bg-[#121824] border-x border-b border-[#1e293b] rounded-b-xl p-2 h-[95px] flex flex-col border-t border-[#1e293b]/50 w-full">
                 <div class="text-[10px] text-slate-400 font-bold mb-0.5 flex justify-between">
-                    <span>⚡ KD(9,3) 指標：<strong style="color: #D97706;">K(橘)</strong> / <strong style="color: #2563EB;">D(藍)</strong></span>
-                    <span class="text-slate-500 font-mono">超買超賣位階：80 / 20</span>
+                    <span>⚡ KD(9,3)：<strong style="color: #D97706;">K(橘)</strong> / <strong style="color: #2563EB;">D(藍)</strong></span>
+                    <span class="text-slate-500 font-mono">80 / 20</span>
                 </div>
                 <div id="kdChartContainer" class="w-full flex-1"></div>
             </div>
         </main>
 
-        <!-- 右側：選擇權風控與 LINE 推播 -->
-        <aside class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 overflow-y-auto">
-            <h2 class="text-sm font-black text-white mb-3 flex items-center justify-between">
+        <!-- 右側：選擇權風控與 LINE 推播 (手機排在中段) -->
+        <aside id="rightSidebar" class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 shrink-0">
+            <h2 class="text-sm font-black text-white mb-2.5 flex items-center justify-between">
                 <span>📊 V9.8 期權風控與真數據對齊</span>
                 <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">機構旗艦</span>
             </h2>
 
-            <div class="space-y-3 text-xs">
-                <div>
-                    <label class="text-slate-400 block mb-1">選擇到期日 (Expiration)</label>
-                    <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
-                        <option value="">載入中...</option>
-                    </select>
+            <div class="space-y-2.5 text-xs">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                        <label class="text-slate-400 block mb-1">到期日</label>
+                        <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
+                            <option value="">載入中...</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-slate-400 block mb-1">策略類型</label>
+                        <select id="strategySelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
+                            <option value="csp">Short Put (低接收租)</option>
+                            <option value="cc">Covered Call (現股包租)</option>
+                            <option value="long_call">Long Call (突破多頭)</option>
+                        </select>
+                    </div>
                 </div>
 
-                <div>
-                    <label class="text-slate-400 block mb-1">選擇策略類型</label>
-                    <select id="strategySelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
-                        <option value="csp">Short Put (低接收租 / 智慧對齊 MA20)</option>
-                        <option value="cc">Covered Call (現股包租公)</option>
-                        <option value="long_call">Long Call (突破多頭)</option>
-                    </select>
-                </div>
-
-                <div class="bg-[#0b0e14] p-3 rounded-lg border border-[#2a374a] space-y-1">
+                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-1">
                     <div class="flex justify-between items-center">
-                        <span class="text-slate-400">現價 (S) / 20MA(月線) 支撐</span>
+                        <span class="text-slate-400">現價 / 20MA 支撐</span>
                         <span id="spotDisplay" class="text-white font-bold">-</span>
                     </div>
                     <div class="flex justify-between items-center">
                         <span class="text-slate-400">停損參考點位</span>
-                        <span id="stopLossDisplay" class="text-amber-400 font-bold">頸線支撐 / 月線</span>
+                        <span id="stopLossDisplay" class="text-amber-400 font-bold">頸線 / 月線</span>
                     </div>
                 </div>
 
-                <div class="bg-[#0b0e14] p-3 rounded-lg border border-[#2a374a]">
+                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a]">
                     <div class="flex justify-between items-center mb-1">
                         <label class="text-slate-400">目標履約價 (Strike)</label>
                         <span class="text-[10px] text-[#38bdf8] cursor-pointer hover:underline" onclick="autoAlignMA20()">🎯 智慧對齊 MA20</span>
@@ -239,34 +271,22 @@ HTML_CONTENT = """
                     </select>
                 </div>
 
-                <!-- Payoff 損益分佈圖 -->
-                <div class="bg-[#0b0e14] p-3 rounded-lg border border-[#2a374a] space-y-1.5">
+                <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-1">
                     <div class="font-bold text-[#38bdf8] flex justify-between items-center text-[11px]">
                         <span>📈 Payoff 損益分佈預覽</span>
                     </div>
-                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-[#121824] p-2 rounded border border-[#1e293b]">
+                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-[#121824] p-1.5 rounded border border-[#1e293b]">
                         <div>最大獲利: <strong id="payoffMax" class="text-emerald-400">--</strong></div>
                         <div>最大虧損: <strong id="payoffMin" class="text-red-400">--</strong></div>
                     </div>
-                    <canvas id="payoffCanvas" height="85" class="w-full bg-[#121824] rounded border border-[#1e293b] mt-1"></canvas>
+                    <canvas id="payoffCanvas" height="75" class="w-full bg-[#121824] rounded border border-[#1e293b] mt-1"></canvas>
                 </div>
 
-                <!-- Greeks 風險敏感度 -->
-                <div class="bg-[#0b0e14] p-3 rounded-lg border border-[#2a374a] space-y-1.5">
-                    <div class="font-bold text-[#38bdf8] border-b border-[#1e293b] pb-1">⚡ Greeks 風險敏感度</div>
-                    <div class="grid grid-cols-2 gap-2 text-[11px]">
-                        <div>Delta: <strong id="valDelta" class="text-white">-</strong></div>
-                        <div>Theta (每日損耗): <strong id="valTheta" class="text-amber-400">-</strong></div>
-                        <div>Gamma: <strong id="valGamma" class="text-white">-</strong></div>
-                        <div>Vega (波動敏感): <strong id="valVega" class="text-white">-</strong></div>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2">
-                    <button onclick="calculateOptionStrategy()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black py-2.5 rounded-lg transition shadow">
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                    <button onclick="calculateOptionStrategy()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black py-2 rounded-lg transition shadow text-xs">
                         V9.8 風控檢核
                     </button>
-                    <button onclick="sendCloudPush()" class="bg-[#06C755] hover:bg-[#05b34c] text-white font-black py-2.5 rounded-lg transition shadow">
+                    <button onclick="sendCloudPush()" class="bg-[#06C755] hover:bg-[#05b34c] text-white font-black py-2 rounded-lg transition shadow text-xs">
                         📲 LINE 戰報推播
                     </button>
                 </div>
@@ -275,16 +295,16 @@ HTML_CONTENT = """
     </div>
 
     <!-- LINE Flex 戰報實機預覽視窗 -->
-    <div id="lineModal" class="fixed inset-0 bg-black/75 flex items-center justify-center hidden z-50">
-        <div class="bg-[#121824] border border-[#1e293b] rounded-2xl p-6 w-[440px] shadow-2xl space-y-3">
+    <div id="lineModal" class="fixed inset-0 bg-black/75 flex items-center justify-center hidden z-50 p-4">
+        <div class="bg-[#121824] border border-[#1e293b] rounded-2xl p-5 w-full max-w-md shadow-2xl space-y-3">
             <div class="flex justify-between items-center border-b border-[#1e293b] pb-2">
                 <div class="flex items-center space-x-2">
                     <span class="w-3 h-3 bg-[#06C755] rounded-full"></span>
-                    <h3 class="text-sm font-black text-white">📲 美股多空雷達 V9.8 ｜ LINE 戰報實機發送</h3>
+                    <h3 class="text-sm font-black text-white">📲 美股多空雷達 V9.8 ｜ LINE 戰報</h3>
                 </div>
                 <button onclick="closeLineModal()" class="text-slate-400 hover:text-white text-sm">✕</button>
             </div>
-            <div class="bg-[#0b0e14] p-4 rounded-xl border border-[#2a374a] text-xs font-mono text-slate-300 space-y-2 whitespace-pre-wrap max-h-[380px] overflow-y-auto" id="linePreviewText"></div>
+            <div class="bg-[#0b0e14] p-3.5 rounded-xl border border-[#2a374a] text-xs font-mono text-slate-300 space-y-1.5 whitespace-pre-wrap max-h-[340px] overflow-y-auto" id="linePreviewText"></div>
             <button onclick="closeLineModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-xs transition">確 認</button>
         </div>
     </div>
@@ -375,28 +395,27 @@ HTML_CONTENT = """
                 rightPriceScale: { borderColor: '#1e293b' }
             };
 
-            mainChart = LightweightCharts.createChart(mainEl, { ...chartOpts, width: mainEl.clientWidth, height: 310 });
-            // 台股標準紅漲綠跌色碼
+            const isMobile = window.innerWidth <= 1024;
+            const mainHeight = isMobile ? 270 : 310;
+
+            mainChart = LightweightCharts.createChart(mainEl, { ...chartOpts, width: mainEl.clientWidth, height: mainHeight });
             candleSeries = mainChart.addCandlestickSeries({
                 upColor: '#C0392B', downColor: '#1E7E5A',
                 wickUpColor: '#C0392B', wickDownColor: '#1E7E5A'
             });
 
-            // 100% 對齊台股 V9.8 均線標準配色
             ma5Series = mainChart.addLineSeries({ color: '#D97706', lineWidth: 1.5, title: '5MA' });
             ma10Series = mainChart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, title: '10MA' });
-            ma20Series = mainChart.addLineSeries({ color: '#7C3AED', lineWidth: 2, title: '20MA(月線)' });
-            ma60Series = mainChart.addLineSeries({ color: '#0D9488', lineWidth: 1.5, title: '60MA(季線)' });
-            ma240Series = mainChart.addLineSeries({ color: '#334155', lineWidth: 1.5, lineStyle: 2, title: '240MA(年線)' });
+            ma20Series = mainChart.addLineSeries({ color: '#7C3AED', lineWidth: 2, title: '20MA(月)' });
+            ma60Series = mainChart.addLineSeries({ color: '#0D9488', lineWidth: 1.5, title: '60MA(季)' });
+            ma240Series = mainChart.addLineSeries({ color: '#334155', lineWidth: 1.5, lineStyle: 2, title: '240MA(年)' });
             neckSeries = mainChart.addLineSeries({ color: '#B45309', lineWidth: 2, lineStyle: 1, title: '頸線' });
 
-            // 副圖 1: 成交量 ＋ 台股 5日均量線
-            volChart = LightweightCharts.createChart(volEl, { ...chartOpts, width: volEl.clientWidth, height: 95 });
+            volChart = LightweightCharts.createChart(volEl, { ...chartOpts, width: volEl.clientWidth, height: 80 });
             volSeries = volChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
             volMaSeries = volChart.addLineSeries({ color: '#B45309', lineWidth: 1.5, lineStyle: 1, title: 'Vol-MA5' });
 
-            // 副圖 2: 台股 KD(9,3,3)
-            kdChart = LightweightCharts.createChart(kdEl, { ...chartOpts, width: kdEl.clientWidth, height: 95 });
+            kdChart = LightweightCharts.createChart(kdEl, { ...chartOpts, width: kdEl.clientWidth, height: 80 });
             kSeries = kdChart.addLineSeries({ color: '#D97706', lineWidth: 1.8, title: 'K(9)' });
             dSeries = kdChart.addLineSeries({ color: '#2563EB', lineWidth: 1.8, title: 'D(9)' });
 
@@ -409,10 +428,8 @@ HTML_CONTENT = """
                 if (!param.time || !param.seriesData.get(candleSeries)) return;
                 const c = param.seriesData.get(candleSeries);
                 const m5 = param.seriesData.get(ma5Series);
-                const m10 = param.seriesData.get(ma10Series);
                 const m20 = param.seriesData.get(ma20Series);
                 const m60 = param.seriesData.get(ma60Series);
-                const m240 = param.seriesData.get(ma240Series);
                 const neck = param.seriesData.get(neckSeries);
                 
                 document.getElementById('legOpen').innerText = `$${c.open.toFixed(2)}`;
@@ -420,18 +437,20 @@ HTML_CONTENT = """
                 document.getElementById('legLow').innerText = `$${c.low.toFixed(2)}`;
                 document.getElementById('legClose').innerText = `$${c.close.toFixed(2)}`;
                 if(m5) document.getElementById('legMA5').innerText = `$${m5.value.toFixed(2)}`;
-                if(m10) document.getElementById('legMA10').innerText = `$${m10.value.toFixed(2)}`;
                 if(m20) document.getElementById('legMA20').innerText = `$${m20.value.toFixed(2)}`;
                 if(m60) document.getElementById('legMA60').innerText = `$${m60.value.toFixed(2)}`;
-                if(m240) document.getElementById('legMA240').innerText = `$${m240.value.toFixed(2)}`;
                 if(neck) document.getElementById('legNeck').innerText = `$${neck.value.toFixed(2)}`;
             });
 
-            window.addEventListener('resize', () => {
-                mainChart.applyOptions({ width: mainEl.clientWidth });
-                volChart.applyOptions({ width: volEl.clientWidth });
-                kdChart.applyOptions({ width: kdEl.clientWidth });
-            });
+            function resizeCharts() {
+                const w = mainEl.clientWidth;
+                mainChart.applyOptions({ width: w });
+                volChart.applyOptions({ width: w });
+                kdChart.applyOptions({ width: w });
+            }
+
+            window.addEventListener('resize', resizeCharts);
+            setTimeout(resizeCharts, 200);
         }
 
         async function fetchStockData(symbol) {
@@ -464,7 +483,7 @@ HTML_CONTENT = """
                     kSeries.setData(data.k_data);
                     dSeries.setData(data.d_data);
 
-                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name} (${currentInterval === '1d' ? '日K' : '週K'})`;
+                    document.getElementById('chartTitle').innerText = `${symbol} ${data.name}`;
                     document.getElementById('currentPriceTag').innerText = `收盤: $${currentSpot}`;
                     document.getElementById('spotDisplay').innerText = `$${currentSpot} (20MA: $${currentMA20})`;
                     document.getElementById('stopLossDisplay').innerText = `頸線 $${currentNeckline} ／ 月線 $${currentMA20}`;
@@ -704,17 +723,13 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     if df.empty:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    # 台股標準均線天期：5, 10, 20, 60, 240
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
     df['MA240'] = df['Close'].rolling(window=240, min_periods=60).mean()
-    
-    # 台股 5日均量線
     df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=3).mean()
 
-    # 台股標準 KD (9, 3, 3) 演算法
     low9 = df['Low'].rolling(9, min_periods=9).min()
     high9 = df['High'].rolling(9, min_periods=9).max()
     rsv = ((df['Close'] - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
