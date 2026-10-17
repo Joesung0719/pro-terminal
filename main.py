@@ -9,7 +9,7 @@ import requests
 import datetime
 import os
 
-app = FastAPI(title="US Professional Radar War Room - V9.8 True Full Edition")
+app = FastAPI(title="US Professional Radar War Room - V9.8 True Color Edition")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,77 +42,25 @@ def calculate_greeks(S, K, T, r, sigma, option_type="put"):
         "vega": float(round(vega, 4))
     }
 
-# 美股各大市場與板塊分類大池
-MARKET_SECTORS = {
-    "ALL": "全市場精選大池",
-    "SOX": "費城半導體 (SOX)",
-    "NASDAQ": "那斯達克 100 (科技核心)",
-    "DOW": "道瓊工業 30 (傳統藍籌)",
-    "NYSE": "紐約證交所主力 (金融/能源)",
-    "CBOE": "芝加哥主力與指數商品",
-    "ETF": "全美主力指數與商品 ETF"
-}
-
 MARKET_UNIVERSE = [
-    # 費半 SOX
     {"symbol": "NVDA", "name": "輝達", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "TSM", "name": "台積電 ADR", "sector": "SOX", "market": "NYSE"},
     {"symbol": "AMD", "name": "超微半導體", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "AVGO", "name": "博通", "sector": "SOX", "market": "NASDAQ"},
-    {"symbol": "QCOM", "name": "高通", "sector": "SOX", "market": "NASDAQ"},
-    {"symbol": "TXN", "name": "德州儀器", "sector": "SOX", "market": "NASDAQ"},
-    {"symbol": "MU", "name": "美光科技", "sector": "SOX", "market": "NASDAQ"},
-    {"symbol": "INTC", "name": "英特爾", "sector": "SOX", "market": "NASDAQ"},
-    {"symbol": "ARM", "name": "安謀科技", "sector": "SOX", "market": "NASDAQ"},
-    {"symbol": "ASML", "name": "艾司摩爾", "sector": "SOX", "market": "NASDAQ"},
-
-    # 那斯達克 NASDAQ 100
     {"symbol": "AAPL", "name": "蘋果", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "MSFT", "name": "微軟", "sector": "NASDAQ", "market": "NASDAQ"},
-    {"symbol": "GOOGL", "name": "Alphabet (Google)", "sector": "NASDAQ", "market": "NASDAQ"},
+    {"symbol": "GOOGL", "name": "Alphabet", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "AMZN", "name": "亞馬遜", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "META", "name": "Meta 臉書", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "TSLA", "name": "特斯拉", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "NFLX", "name": "網飛 Netflix", "sector": "NASDAQ", "market": "NASDAQ"},
-    {"symbol": "COST", "name": "好市多 Costco", "sector": "NASDAQ", "market": "NASDAQ"},
-    {"symbol": "ADBE", "name": "奧多比 Adobe", "sector": "NASDAQ", "market": "NASDAQ"},
-    {"symbol": "COIN", "name": "Coinbase 加密所", "sector": "NASDAQ", "market": "NASDAQ"},
-
-    # 道瓊 DOW 30
-    {"symbol": "CAT", "name": "開拓重工", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "BA", "name": "波音公司", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "UNH", "name": "聯合健康集團", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "JNJ", "name": "嬌生生技", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "MCD", "name": "麥當勞", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "HD", "name": "家得寶 Home Depot", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "V", "name": "Visa 信用卡", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "WMT", "name": "沃爾瑪", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "IBM", "name": "國際商業機器 IBM", "sector": "DOW", "market": "NYSE"},
-    {"symbol": "GS", "name": "高盛集團", "sector": "DOW", "market": "NYSE"},
-
-    # 紐約證交所 NYSE 主力 (金融 / 能源 / 國防)
     {"symbol": "PLTR", "name": "帕蘭蒂爾科技", "sector": "NYSE", "market": "NYSE"},
     {"symbol": "JPM", "name": "摩根大通", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "BAC", "name": "美國銀行", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "XOM", "name": "埃克森美孚石油", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "CVX", "name": "雪佛龍能源", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "LLY", "name": "禮來藥廠", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "NKE", "name": "耐吉 Nike", "sector": "NYSE", "market": "NYSE"},
-    {"symbol": "UBER", "name": "優步 Uber", "sector": "NYSE", "market": "NYSE"},
-
-    # 芝加哥 CBOE 衍生主力與指數工具
-    {"symbol": "CBOE", "name": "芝加哥期權交易所集團", "sector": "CBOE", "market": "CBOE"},
-    {"symbol": "CME", "name": "芝加哥商品交易所", "sector": "CBOE", "market": "NASDAQ"},
-    {"symbol": "ICE", "name": "洲際交易所集團", "sector": "CBOE", "market": "NYSE"},
-
-    # ETF 主力
-    {"symbol": "SPY", "name": "標普500指數 ETF", "sector": "ETF", "market": "AMEX"},
-    {"symbol": "QQQ", "name": "那斯達克100 ETF", "sector": "ETF", "market": "NASDAQ"},
-    {"symbol": "SOXX", "name": "費城半導體指數 ETF", "sector": "ETF", "market": "NASDAQ"},
-    {"symbol": "DIA", "name": "道瓊工業指數 ETF", "sector": "ETF", "market": "AMEX"},
-    {"symbol": "IWM", "name": "羅素2000小型股 ETF", "sector": "ETF", "market": "AMEX"},
-    {"symbol": "TLT", "name": "20年期以上美國公債 ETF", "sector": "ETF", "market": "NASDAQ"},
-    {"symbol": "GLD", "name": "SPDR 黃金信託 ETF", "sector": "ETF", "market": "AMEX"}
+    {"symbol": "BA", "name": "波音公司", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "CAT", "name": "開拓重工", "sector": "DOW", "market": "NYSE"},
+    {"symbol": "SPY", "name": "標普500 ETF", "sector": "ETF", "market": "AMEX"},
+    {"symbol": "QQQ", "name": "那指100 ETF", "sector": "ETF", "market": "NASDAQ"},
+    {"symbol": "SOXX", "name": "費半 ETF", "sector": "ETF", "market": "NASDAQ"}
 ]
 
 HTML_CONTENT = """
@@ -120,68 +68,65 @@ HTML_CONTENT = """
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>美股多空雷達戰情室 V9.8 旗艦完全體</title>
+    <title>美股多空雷達戰情室 V9.8 ｜ 100% 台股標準線形</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body class="bg-[#0b0e14] text-[#e2e8f0] font-sans antialiased h-screen flex flex-col overflow-hidden">
-    <!-- 頂部大盤溫度計全市場看板 (道瓊、那斯達克、費半、標普、VIX) -->
+    <!-- 頂部大盤溫度計全市場看板 -->
     <header class="bg-[#121824] border-b border-[#1e293b] px-4 py-2 flex flex-col gap-1.5 shadow-lg">
         <div class="flex justify-between items-center">
             <div class="flex items-center space-x-3">
                 <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8 旗艦版</span>
-                <span class="text-xs bg-[#1e293b] text-amber-400 px-2.5 py-0.5 rounded-full font-bold border border-amber-500/30">道瓊・費半・那斯達克・紐交・芝加哥全市場對齊</span>
+                <span class="text-xs bg-[#1e293b] text-amber-400 px-2.5 py-0.5 rounded-full font-bold border border-amber-500/30">台股 V9.8 規格全色彩線形移植</span>
             </div>
             <div class="flex items-center space-x-3 text-xs">
                 <span id="marketSessionTag" class="text-slate-400">市場狀態：美股盤後結算</span>
-                <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-0.5 rounded border border-[#38bdf8]/40 font-bold">🔄 刷新大盤溫度計</button>
+                <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-0.5 rounded border border-[#38bdf8]/40 font-bold">🔄 刷新溫度計</button>
             </div>
         </div>
 
-        <!-- 五大指數多空溫度計即時卡片 -->
+        <!-- 五大指數多空溫度計 -->
         <div class="grid grid-cols-5 gap-2 text-xs font-mono">
             <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">🏛️ 道瓊 (DJI)</span>
-                <span id="idx_dji" class="font-bold text-white">載入中...</span>
+                <span id="idx_dji" class="font-bold text-white">--</span>
             </div>
             <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">💻 那指 (IXIC)</span>
-                <span id="idx_ixic" class="font-bold text-white">載入中...</span>
+                <span id="idx_ixic" class="font-bold text-white">--</span>
             </div>
             <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">⚡ 費半 (SOX)</span>
-                <span id="idx_sox" class="font-bold text-white">載入中...</span>
+                <span id="idx_sox" class="font-bold text-white">--</span>
             </div>
             <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">📊 標普 (SPX)</span>
-                <span id="idx_spx" class="font-bold text-white">載入中...</span>
+                <span id="idx_spx" class="font-bold text-white">--</span>
             </div>
             <div class="bg-[#0b0e14] border border-[#1e293b] px-2.5 py-1.5 rounded flex justify-between items-center">
                 <span class="text-amber-400 font-bold">🔥 恐慌 (VIX)</span>
-                <span id="idx_vix" class="font-bold text-amber-400">載入中...</span>
+                <span id="idx_vix" class="font-bold text-amber-400">--</span>
             </div>
         </div>
     </header>
 
     <!-- 主體區域 -->
     <div class="flex flex-1 overflow-hidden">
-        <!-- 左側：各大市場板塊分類與 V9.8 量價過濾清單 -->
+        <!-- 左側：市場板塊分類與清單 -->
         <aside class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col">
             <div class="p-3 border-b border-[#1e293b] space-y-2">
                 <div class="flex justify-between items-center">
                     <h2 class="text-xs font-bold text-slate-300 uppercase tracking-wider">🎯 市場板塊分類</h2>
                     <span class="text-[10px] text-emerald-400 font-bold bg-[#0b0e14] px-1.5 py-0.5 rounded border border-emerald-500/30">V9.8 爆量突破</span>
                 </div>
-                
-                <!-- 美股全市場板塊切換選單 -->
                 <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
                     <option value="ALL">🌐 全市場精選大池 (全部標的)</option>
                     <option value="SOX">⚡ 費城半導體 (SOX / 晶片軍火)</option>
                     <option value="NASDAQ">💻 那斯達克 100 (科技核心主力)</option>
                     <option value="DOW">🏛️ 道瓊工業 30 (傳統藍籌防守)</option>
                     <option value="NYSE">💼 紐約證交所主力 (金融/能源/國防)</option>
-                    <option value="CBOE">📈 芝加哥期權主力 (交易所/波動)</option>
-                    <option value="ETF">📊 全美主力 ETF (標普/公債/黃金)</option>
+                    <option value="ETF">📊 全美主力 ETF (標普/費半)</option>
                 </select>
 
                 <div class="flex gap-2">
@@ -192,9 +137,8 @@ HTML_CONTENT = """
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：台股 V9.8 規格四均線 ＋ 雙副圖 ＋ 游標數值面板 -->
+        <!-- 中間：台股 V9.8 規格 K線圖與雙副圖 -->
         <main class="flex-1 flex flex-col bg-[#0b0e14] p-3 overflow-y-auto">
-            <!-- 走勢頂部資訊列 -->
             <div class="flex justify-between items-center mb-2">
                 <div class="flex items-center space-x-3">
                     <h1 id="chartTitle" class="text-xl font-black text-white tracking-wide">PLTR 帕蘭蒂爾科技</h1>
@@ -213,39 +157,44 @@ HTML_CONTENT = """
                 </div>
             </div>
 
-            <!-- V9.8 十字線浮動即時數值面板 (Legend) -->
-            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-3 py-1.5 rounded mb-2 text-xs flex flex-wrap gap-x-4 gap-y-1 font-mono text-slate-300">
+            <!-- V9.8 均線膠囊式顏色對齊 Legend 面板 -->
+            <div id="legendPanel" class="bg-[#121824] border border-[#1e293b] px-3 py-1.5 rounded mb-2 text-xs flex flex-wrap gap-x-3.5 gap-y-1 font-mono text-slate-300">
                 <span>開: <strong id="legOpen" class="text-white">--</strong></span>
                 <span>高: <strong id="legHigh" class="text-white">--</strong></span>
                 <span>低: <strong id="legLow" class="text-white">--</strong></span>
                 <span>收: <strong id="legClose" class="text-emerald-400">--</strong></span>
                 <span>量: <strong id="legVol" class="text-white">--</strong></span>
-                <span class="text-amber-400">MA5(週): <strong id="legMA5">--</strong></span>
-                <span class="text-sky-400">MA20(月線): <strong id="legMA20">--</strong></span>
-                <span class="text-purple-400">MA60(季線): <strong id="legMA60">--</strong></span>
-                <span class="text-slate-400">MA240(年線): <strong id="legMA240">--</strong></span>
-                <span class="text-emerald-300">RSI: <strong id="legRSI">--</strong></span>
+                <!-- 台股 V9.8 均線色彩標準 -->
+                <span style="color: #D97706;">5MA(橘): <strong id="legMA5">--</strong></span>
+                <span style="color: #2563EB;">10MA(藍): <strong id="legMA10">--</strong></span>
+                <span style="color: #7C3AED;">20MA(紫): <strong id="legMA20">--</strong></span>
+                <span style="color: #0D9488;">60MA(綠): <strong id="legMA60">--</strong></span>
+                <span style="color: #334155;">240MA(年線): <strong id="legMA240">--</strong></span>
+                <span style="color: #B45309;">頸線: <strong id="legNeck">--</strong></span>
             </div>
 
-            <!-- 主圖 K線 (MA5 / MA20 / MA60 / MA240) -->
+            <!-- 主圖 K線 (MA5/10/20/60/240 + 頸線) -->
             <div class="bg-[#121824] border border-[#1e293b] rounded-t-xl p-2 h-[330px] flex flex-col">
                 <div id="mainChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 1: 成交量 ＋ 20日均量線 -->
+            <!-- 副圖 1: 成交量 ＋ 台股 5日均量線 -->
             <div class="bg-[#121824] border-x border-[#1e293b] p-2 h-[115px] flex flex-col border-t border-[#1e293b]/50">
-                <div class="text-[10px] text-slate-400 font-bold mb-0.5">📊 成交量 ＆ 20日均量線 (Vol-MA20)</div>
+                <div class="text-[10px] text-slate-400 font-bold mb-0.5">📊 成交量 ＆ 5日均量線 (Vol-MA5 橘褐點線)</div>
                 <div id="volChartContainer" class="w-full flex-1"></div>
             </div>
 
-            <!-- 副圖 2: RSI(14) 動能震盪指標 -->
+            <!-- 副圖 2: 台股 KD(9,3,3) 震盪指標 -->
             <div class="bg-[#121824] border-x border-b border-[#1e293b] rounded-b-xl p-2 h-[115px] flex flex-col border-t border-[#1e293b]/50">
-                <div class="text-[10px] text-[#38bdf8] font-bold mb-0.5">⚡ RSI (14) 超買超賣動能指標 (70/30)</div>
-                <div id="rsiChartContainer" class="w-full flex-1"></div>
+                <div class="text-[10px] text-slate-400 font-bold mb-0.5 flex justify-between">
+                    <span>⚡ KD(9,3) 指標：<strong style="color: #D97706;">K(橘)</strong> / <strong style="color: #2563EB;">D(藍)</strong></span>
+                    <span class="text-slate-500 font-mono">超買超賣位階：80 / 20</span>
+                </div>
+                <div id="kdChartContainer" class="w-full flex-1"></div>
             </div>
         </main>
 
-        <!-- 右側：選擇權風控、Payoff 與 LINE 推播 -->
+        <!-- 右側：選擇權風控與 LINE 推播 -->
         <aside class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 overflow-y-auto">
             <h2 class="text-sm font-black text-white mb-3 flex items-center justify-between">
                 <span>📊 V9.8 期權風控與真數據對齊</span>
@@ -271,7 +220,7 @@ HTML_CONTENT = """
 
                 <div class="bg-[#0b0e14] p-3 rounded-lg border border-[#2a374a] space-y-1">
                     <div class="flex justify-between items-center">
-                        <span class="text-slate-400">現價 (S) / MA20 支撐</span>
+                        <span class="text-slate-400">現價 (S) / 20MA(月線) 支撐</span>
                         <span id="spotDisplay" class="text-white font-bold">-</span>
                     </div>
                     <div class="flex justify-between items-center">
@@ -341,15 +290,14 @@ HTML_CONTENT = """
     </div>
 
     <script>
-        let mainChart, volChart, rsiChart;
-        let candleSeries, ma5Series, ma20Series, ma60Series, ma240Series;
-        let volSeries, volMaSeries, rsiSeries;
+        let mainChart, volChart, kdChart;
+        let candleSeries, ma5Series, ma10Series, ma20Series, ma60Series, ma240Series, neckSeries;
+        let volSeries, volMaSeries, kSeries, dSeries;
         let currentSpot = 0, currentMA20 = 0, currentMA240 = 0, currentNeckline = 0;
         let currentSymbol = "PLTR";
         let currentInterval = "1d";
         let currentOptionData = null;
         let currentSector = "ALL";
-
         let universeData = [];
 
         async function fetchIndicesData() {
@@ -359,7 +307,7 @@ HTML_CONTENT = """
                 
                 const fmtIdx = (obj) => {
                     const arrow = obj.chg >= 0 ? '▲' : '▼';
-                    const color = obj.chg >= 0 ? 'text-red-400' : 'text-emerald-400';
+                    const color = obj.chg >= 0 ? 'text-[#C0392B]' : 'text-[#1E7E5A]';
                     return `<span class="${color}">${obj.close.toLocaleString()} (${arrow}${Math.abs(obj.pct)}%)</span>`;
                 };
 
@@ -418,7 +366,7 @@ HTML_CONTENT = """
         function initCharts() {
             const mainEl = document.getElementById('mainChartContainer');
             const volEl = document.getElementById('volChartContainer');
-            const rsiEl = document.getElementById('rsiChartContainer');
+            const kdEl = document.getElementById('kdChartContainer');
 
             const chartOpts = {
                 layout: { background: { type: 'solid', color: '#121824' }, textColor: '#94a3b8' },
@@ -428,46 +376,61 @@ HTML_CONTENT = """
             };
 
             mainChart = LightweightCharts.createChart(mainEl, { ...chartOpts, width: mainEl.clientWidth, height: 310 });
-            candleSeries = mainChart.addCandlestickSeries({ upColor: '#ef5350', downColor: '#26a69a', wickUpColor: '#ef5350', wickDownColor: '#26a69a' });
-            ma5Series = mainChart.addLineSeries({ color: '#f59e0b', lineWidth: 1.5, title: 'MA5' });
-            ma20Series = mainChart.addLineSeries({ color: '#38bdf8', lineWidth: 2, title: 'MA20' });
-            ma60Series = mainChart.addLineSeries({ color: '#c084fc', lineWidth: 1.5, title: 'MA60' });
-            ma240Series = mainChart.addLineSeries({ color: '#64748b', lineWidth: 1.5, lineStyle: 2, title: 'MA240(年線)' });
+            // 台股標準紅漲綠跌色碼
+            candleSeries = mainChart.addCandlestickSeries({
+                upColor: '#C0392B', downColor: '#1E7E5A',
+                wickUpColor: '#C0392B', wickDownColor: '#1E7E5A'
+            });
 
+            // 100% 對齊台股 V9.8 均線標準配色
+            ma5Series = mainChart.addLineSeries({ color: '#D97706', lineWidth: 1.5, title: '5MA' });
+            ma10Series = mainChart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, title: '10MA' });
+            ma20Series = mainChart.addLineSeries({ color: '#7C3AED', lineWidth: 2, title: '20MA(月線)' });
+            ma60Series = mainChart.addLineSeries({ color: '#0D9488', lineWidth: 1.5, title: '60MA(季線)' });
+            ma240Series = mainChart.addLineSeries({ color: '#334155', lineWidth: 1.5, lineStyle: 2, title: '240MA(年線)' });
+            neckSeries = mainChart.addLineSeries({ color: '#B45309', lineWidth: 2, lineStyle: 1, title: '頸線' });
+
+            // 副圖 1: 成交量 ＋ 台股 5日均量線
             volChart = LightweightCharts.createChart(volEl, { ...chartOpts, width: volEl.clientWidth, height: 95 });
             volSeries = volChart.addHistogramSeries({ priceFormat: { type: 'volume' } });
-            volMaSeries = volChart.addLineSeries({ color: '#facc15', lineWidth: 1.5, title: 'Vol-MA20' });
+            volMaSeries = volChart.addLineSeries({ color: '#B45309', lineWidth: 1.5, lineStyle: 1, title: 'Vol-MA5' });
 
-            rsiChart = LightweightCharts.createChart(rsiEl, { ...chartOpts, width: rsiEl.clientWidth, height: 95 });
-            rsiSeries = rsiChart.addLineSeries({ color: '#38bdf8', lineWidth: 2, title: 'RSI' });
+            // 副圖 2: 台股 KD(9,3,3)
+            kdChart = LightweightCharts.createChart(kdEl, { ...chartOpts, width: kdEl.clientWidth, height: 95 });
+            kSeries = kdChart.addLineSeries({ color: '#D97706', lineWidth: 1.8, title: 'K(9)' });
+            dSeries = kdChart.addLineSeries({ color: '#2563EB', lineWidth: 1.8, title: 'D(9)' });
 
             mainChart.timeScale().subscribeVisibleTimeRangeChange(range => {
                 volChart.timeScale().setVisibleRange(range);
-                rsiChart.timeScale().setVisibleRange(range);
+                kdChart.timeScale().setVisibleRange(range);
             });
 
             mainChart.subscribeCrosshairMove(param => {
                 if (!param.time || !param.seriesData.get(candleSeries)) return;
                 const c = param.seriesData.get(candleSeries);
                 const m5 = param.seriesData.get(ma5Series);
+                const m10 = param.seriesData.get(ma10Series);
                 const m20 = param.seriesData.get(ma20Series);
                 const m60 = param.seriesData.get(ma60Series);
                 const m240 = param.seriesData.get(ma240Series);
+                const neck = param.seriesData.get(neckSeries);
                 
                 document.getElementById('legOpen').innerText = `$${c.open.toFixed(2)}`;
                 document.getElementById('legHigh').innerText = `$${c.high.toFixed(2)}`;
                 document.getElementById('legLow').innerText = `$${c.low.toFixed(2)}`;
                 document.getElementById('legClose').innerText = `$${c.close.toFixed(2)}`;
                 if(m5) document.getElementById('legMA5').innerText = `$${m5.value.toFixed(2)}`;
+                if(m10) document.getElementById('legMA10').innerText = `$${m10.value.toFixed(2)}`;
                 if(m20) document.getElementById('legMA20').innerText = `$${m20.value.toFixed(2)}`;
                 if(m60) document.getElementById('legMA60').innerText = `$${m60.value.toFixed(2)}`;
                 if(m240) document.getElementById('legMA240').innerText = `$${m240.value.toFixed(2)}`;
+                if(neck) document.getElementById('legNeck').innerText = `$${neck.value.toFixed(2)}`;
             });
 
             window.addEventListener('resize', () => {
                 mainChart.applyOptions({ width: mainEl.clientWidth });
                 volChart.applyOptions({ width: volEl.clientWidth });
-                rsiChart.applyOptions({ width: rsiEl.clientWidth });
+                kdChart.applyOptions({ width: kdEl.clientWidth });
             });
         }
 
@@ -485,22 +448,25 @@ HTML_CONTENT = """
 
                     candleSeries.setData(data.candles);
                     ma5Series.setData(data.ma5);
+                    ma10Series.setData(data.ma10);
                     ma20Series.setData(data.ma20);
                     ma60Series.setData(data.ma60);
                     ma240Series.setData(data.ma240);
+                    neckSeries.setData(data.neckline_data);
 
                     const volData = data.candles.map(c => ({
                         time: c.time,
                         value: c.volume,
-                        color: c.close >= c.open ? 'rgba(239, 83, 80, 0.6)' : 'rgba(38, 166, 154, 0.6)'
+                        color: c.close >= c.open ? 'rgba(192, 57, 43, 0.7)' : 'rgba(30, 126, 90, 0.7)'
                     }));
                     volSeries.setData(volData);
-                    volMaSeries.setData(data.vol_ma);
-                    rsiSeries.setData(data.rsi);
+                    volMaSeries.setData(data.vol_ma5);
+                    kSeries.setData(data.k_data);
+                    dSeries.setData(data.d_data);
 
                     document.getElementById('chartTitle').innerText = `${symbol} ${data.name} (${currentInterval === '1d' ? '日K' : '週K'})`;
                     document.getElementById('currentPriceTag').innerText = `收盤: $${currentSpot}`;
-                    document.getElementById('spotDisplay').innerText = `$${currentSpot} (MA20: $${currentMA20})`;
+                    document.getElementById('spotDisplay').innerText = `$${currentSpot} (20MA: $${currentMA20})`;
                     document.getElementById('stopLossDisplay').innerText = `頸線 $${currentNeckline} ／ 月線 $${currentMA20}`;
                     document.getElementById('qualityTag').innerText = data.quality_badge;
 
@@ -676,14 +642,7 @@ def serve_index():
 
 @app.get("/api/market/indices")
 def get_indices():
-    """取得道瓊、那指、費半、標普500、恐慌指數 VIX 大盤溫度計"""
-    indices_map = {
-        "dji": "^DJI",
-        "ixic": "^IXIC",
-        "sox": "^SOX",
-        "spx": "^GSPC",
-        "vix": "^VIX"
-    }
+    indices_map = {"dji": "^DJI", "ixic": "^IXIC", "sox": "^SOX", "spx": "^GSPC", "vix": "^VIX"}
     results = {}
     for k, sym in indices_map.items():
         try:
@@ -704,10 +663,8 @@ def get_indices():
 
 @app.get("/api/screener")
 def run_v98_screener(sector: str = "ALL"):
-    """V9.8 嚴謹量價突破與年線品質篩選引擎"""
     target_pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
     results = []
-    
     for item in target_pool[:25]:
         sym = item["symbol"]
         try:
@@ -715,18 +672,15 @@ def run_v98_screener(sector: str = "ALL"):
             df = t.history(period="3mo")
             if df.empty or len(df) < 25:
                 continue
-            
             c = float(df['Close'].iloc[-1])
             o = float(df['Open'].iloc[-1])
             v = float(df['Volume'].iloc[-1])
             v_ma5 = float(df['Volume'].shift(1).rolling(5).mean().iloc[-1])
             ma20 = float(df['Close'].rolling(20).mean().iloc[-1])
             neckline = float(df['High'].iloc[-21:-1].max())
-            
             dist_neck = round(((c / neckline) - 1.0) * 100.0, 1)
             v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
             
-            # V9.8 突破判定：突破20日高點 + 紅K + 站上月線
             if c > neckline and c > o and c > ma20 and v_ratio >= 1.2:
                 score = "🔥 暴量突破"
             elif c > ma20 and abs(dist_neck) <= 5.0:
@@ -735,12 +689,8 @@ def run_v98_screener(sector: str = "ALL"):
                 score = "💎 偏多整理"
                 
             results.append({
-                "symbol": sym,
-                "name": item["name"],
-                "sector": item["sector"],
-                "score": score,
-                "dist_neck_pct": dist_neck,
-                "v_ratio": v_ratio
+                "symbol": sym, "name": item["name"], "sector": item["sector"],
+                "score": score, "dist_neck_pct": dist_neck, "v_ratio": v_ratio
             })
         except:
             continue
@@ -754,17 +704,30 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     if df.empty:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
+    # 台股標準均線天期：5, 10, 20, 60, 240
     df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
     df['MA240'] = df['Close'].rolling(window=240, min_periods=60).mean()
-    df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
+    
+    # 台股 5日均量線
+    df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=3).mean()
 
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    # 台股標準 KD (9, 3, 3) 演算法
+    low9 = df['Low'].rolling(9, min_periods=9).min()
+    high9 = df['High'].rolling(9, min_periods=9).max()
+    rsv = ((df['Close'] - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
+    k_vals, d_vals = [], []
+    k_prev, d_prev = 50.0, 50.0
+    for val in rsv:
+        k_curr = (2.0 / 3.0) * k_prev + (1.0 / 3.0) * float(val)
+        d_curr = (2.0 / 3.0) * d_prev + (1.0 / 3.0) * k_curr
+        k_vals.append(round(k_curr, 1))
+        d_vals.append(round(d_curr, 1))
+        k_prev, d_prev = k_curr, d_curr
+    df['K'] = k_vals
+    df['D'] = d_vals
 
     df = df.dropna(subset=['Close'])
     spot = float(round(df['Close'].iloc[-1], 2))
@@ -775,7 +738,9 @@ def get_quote_data(symbol: str, interval: str = "1d"):
 
     quality_badge = "🛡️ 距頸線 ≤ 5% 且站上月線" if dist_neck <= 5.0 and spot >= ma20_val else "⚠️ 乖離偏遠或月線下"
 
-    candles, ma5_data, ma20_data, ma60_data, ma240_data, vol_ma_data, rsi_data = [], [], [], [], [], [], []
+    candles, ma5_data, ma10_data, ma20_data, ma60_data, ma240_data = [], [], [], [], [], []
+    neckline_data, vol_ma5_data, k_data, d_data = [], [], [], []
+
     for date, row in df.iterrows():
         t_str = date.strftime("%Y-%m-%d")
         candles.append({
@@ -787,11 +752,14 @@ def get_quote_data(symbol: str, interval: str = "1d"):
             "volume": int(row["Volume"])
         })
         if not pd.isna(row["MA5"]): ma5_data.append({"time": t_str, "value": float(round(row["MA5"], 2))})
+        if not pd.isna(row["MA10"]): ma10_data.append({"time": t_str, "value": float(round(row["MA10"], 2))})
         if not pd.isna(row["MA20"]): ma20_data.append({"time": t_str, "value": float(round(row["MA20"], 2))})
         if not pd.isna(row["MA60"]): ma60_data.append({"time": t_str, "value": float(round(row["MA60"], 2))})
         if not pd.isna(row["MA240"]): ma240_data.append({"time": t_str, "value": float(round(row["MA240"], 2))})
-        if not pd.isna(row["Vol_MA"]): vol_ma_data.append({"time": t_str, "value": int(row["Vol_MA"])})
-        if not pd.isna(row["RSI"]): rsi_data.append({"time": t_str, "value": float(round(row["RSI"], 1))})
+        neckline_data.append({"time": t_str, "value": neckline})
+        if not pd.isna(row["Vol_MA5"]): vol_ma5_data.append({"time": t_str, "value": int(row["Vol_MA5"])})
+        k_data.append({"time": t_str, "value": float(row["K"])})
+        d_data.append({"time": t_str, "value": float(row["D"])})
 
     name = symbol
     for it in MARKET_UNIVERSE:
@@ -810,11 +778,14 @@ def get_quote_data(symbol: str, interval: str = "1d"):
         "quality_badge": quality_badge,
         "candles": candles,
         "ma5": ma5_data,
+        "ma10": ma10_data,
         "ma20": ma20_data,
         "ma60": ma60_data,
         "ma240": ma240_data,
-        "vol_ma": vol_ma_data,
-        "rsi": rsi_data
+        "neckline_data": neckline_data,
+        "vol_ma5": vol_ma5_data,
+        "k_data": k_data,
+        "d_data": d_data
     }
 
 @app.get("/api/options/{symbol}")
