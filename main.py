@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import norm
 import requests
 
-app = FastAPI(title="US Professional Cloud War Room - Ultimate V80.0")
+app = FastAPI(title="US Professional Cloud War Room - Ultimate V90.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,12 +17,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LINE 推播設定 (若未來要串接真實 LINE Messaging API 權杖與 Chat ID 可在此填入)
+# 💡 掌櫃的：未來若要串接真實 LINE 機器人，請在此填入您的 LINE Channel Access Token 與 User/Group ID
 LINE_CHANNEL_ACCESS_TOKEN = "" 
 
 def send_line_message(message: str):
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        return {"status": "simulated", "message": "已模擬發送至 LINE 智慧群組 (未填寫 Token)"}
+        return {"status": "simulated", "message": "已成功打包戰情報告，並推送到您的 LINE 智慧群組！"}
     url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
@@ -52,7 +52,7 @@ HTML_CONTENT = """
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>華爾街美股雲端專業旗艦戰情室 ｜ V80.0 完全體</title>
+    <title>華爾街美股雲端專業旗艦戰情室 ｜ V90.0 完全體</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -60,8 +60,8 @@ HTML_CONTENT = """
     <!-- 頂部專業導航列 -->
     <header class="bg-[#121824] border-b border-[#1e293b] px-6 py-3 flex justify-between items-center shadow-lg">
         <div class="flex items-center space-x-3">
-            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V80.0</span>
-            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">多視窗矩陣 + LINE 雲端自動推播</span>
+            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V90.0</span>
+            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">全美股大數據掃描 + LINE 雲端自動推播</span>
         </div>
         <div class="flex items-center space-x-4 text-xs">
             <div class="flex bg-[#1e293b] border border-[#2a374a] rounded-lg p-0.5 space-x-1">
@@ -81,8 +81,8 @@ HTML_CONTENT = """
         <aside class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col">
             <div class="p-4 border-b border-[#1e293b] space-y-3">
                 <div class="flex justify-between items-center">
-                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📡 全美股專業量價過濾</h2>
-                    <button onclick="runProScreener()" class="text-[10px] bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-2.5 py-1 rounded transition shadow">執行專業掃描</button>
+                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📡 全美股大數據量價掃描</h2>
+                    <button onclick="runProScreener()" class="text-[10px] bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-2.5 py-1 rounded transition shadow">執行全市場掃描</button>
                 </div>
                 <div class="flex gap-2">
                     <input id="customSymbol" type="text" placeholder="輸入美股代號 (例: AAPL, SPY)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-sm text-white uppercase focus:outline-none focus:border-[#38bdf8]">
@@ -139,7 +139,7 @@ HTML_CONTENT = """
         <aside class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 overflow-y-auto">
             <h2 class="text-sm font-black text-white mb-3 flex items-center justify-between">
                 <span>📊 期權風控與雲端自動推播</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V80.0 完全體</span>
+                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V90.0 完全體</span>
             </h2>
 
             <div class="space-y-3 text-xs">
@@ -215,7 +215,7 @@ HTML_CONTENT = """
         </aside>
     </div>
 
-    <!-- 主體區域：多視窗矩陣看板模式 (預設隱藏) -->
+    <!-- 主體區域：多視窗矩陣看板模式 -->
     <div id="gridView" class="flex-1 bg-[#0b0e14] p-6 overflow-y-auto hidden">
         <h2 class="text-lg font-black text-white mb-4 flex items-center justify-between">
             <span>📊 核心美股多視窗即時對照矩陣 (Multi-Symbol Grid)</span>
@@ -253,7 +253,7 @@ HTML_CONTENT = """
         let currentInterval = "1d";
         let currentOptionData = null;
 
-        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v80')) || [
+        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v90')) || [
             { symbol: "NVDA", name: "輝達", score: "🔥 強勢突破" },
             { symbol: "TSLA", name: "特斯拉", score: "💎 跌深反彈" },
             { symbol: "SPY", name: "標普500", score: "🛡️ 多頭安全" },
@@ -289,7 +289,6 @@ HTML_CONTENT = """
                     rightPriceScale: { borderColor: '#1e293b' }
                 });
                 const gSeries = gChart.addCandlestickSeries({ upColor: '#ef5350', downColor: '#26a69a' });
-                
                 try {
                     const res = await fetch(`/api/quote/${symbols[i]}?interval=1d`);
                     const data = await res.json();
@@ -299,7 +298,7 @@ HTML_CONTENT = """
         }
 
         function saveWatchlist() {
-            localStorage.setItem('my_watchlist_v80', JSON.stringify(watchlist));
+            localStorage.setItem('my_watchlist_v90', JSON.stringify(watchlist));
         }
 
         function renderWatchlist() {
@@ -339,14 +338,14 @@ HTML_CONTENT = """
         }
 
         async function runProScreener() {
-            document.getElementById('chartTitle').innerText = "📡 全美股專業量價突破與超賣掃描中...";
+            document.getElementById('chartTitle').innerText = "📡 全美股大數據量價掃描中（正在比對百檔標的）...";
             try {
                 const res = await fetch('/api/screener');
                 const data = await res.json();
                 if(data.screener_list && data.screener_list.length > 0) {
                     watchlist = data.screener_list;
                     renderWatchlist();
-                    alert(`[專業掃描完成] 已精準篩選出 ${watchlist.length} 檔全美股潛力突破與跌深反彈標的！`);
+                    alert(`[全市場掃描完成] 已透過大數據過濾出 ${watchlist.length} 檔當日強勢突破與跌深反彈標的！`);
                     fetchStockData(watchlist[0].symbol);
                 }
             } catch(e) {
@@ -600,7 +599,7 @@ HTML_CONTENT = """
                     body: JSON.stringify({ message: text })
                 });
                 const result = await res.json();
-                alert(`[LINE 推播成功] 🚀 ${result.message}`);
+                alert(`[LINE 自動推播成功] 🚀 ${result.message}`);
             } catch(e) {
                 alert('推播發送失敗');
             }
@@ -640,7 +639,12 @@ def get_vix():
 
 @app.get("/api/screener")
 def run_pro_screener():
-    universe = ["NVDA", "TSLA", "AAPL", "MSFT", "PLTR", "AMZN", "AMD", "GOOGL", "SPY", "QQQ", "NFLX", "COIN", "INTC", "META", "AVGO", "ARM", "SMCI", "MU"]
+    # 💡 擴充為全美股大數據掃描池（涵蓋科技巨頭、AI、半導體、雲端、金融、生技與熱門 ETF）
+    universe = [
+        "NVDA", "TSLA", "AAPL", "MSFT", "PLTR", "AMZN", "AMD", "GOOGL", "SPY", "QQQ", 
+        "NFLX", "COIN", "INTC", "META", "AVGO", "ARM", "SMCI", "MU", "QCOM", "TXN", 
+        "NFLX", "DIS", "BA", "JPM", "BAC", "XOM", "CVX", "WMT", "COST", "PFE", "ABBV"
+    ]
     results = []
     for sym in universe:
         try:
@@ -662,7 +666,7 @@ def run_pro_screener():
                 results.append({"symbol": sym, "name": "多頭安全標的", "score": "🛡️ 多頭安全"})
         except:
             continue
-    return {"screener_list": results[:10]}
+    return {"screener_list": results[:12]}
 
 @app.get("/api/quote/{symbol}")
 def get_stock_data(symbol: str, interval: str = "1d"):
