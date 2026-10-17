@@ -6,7 +6,7 @@ import pandas as pd
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 # 💡 掌櫃的：請在此填入您的真實 LINE Channel Access Token 與目標群組/用戶 ID
-LINE_CHANNEL_ACCESS_TOKEN = ""
+LINE_CHANNEL_ACCESS_TOKEN = "l9IU7jZQ50Hlb5IAGuB8fM3ww2SUuhs1hzoMUe64jNybTBmIEKCzSY/gks5r+g7RJqzeZ0SIEXblTxwCT/QS77C+LgnxF+zZLITD//VO/O6y1X71MQl5V0wf5KxdnUozAQ5ZZMx0RlswvAbZeBBqAAdB04t89/1O/w1cDnyilFU="
 
 def send_line_broadcast(message: str):
     if not LINE_CHANNEL_ACCESS_TOKEN:
