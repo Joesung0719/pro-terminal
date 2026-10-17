@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import norm
 import requests
 
-app = FastAPI(title="US Professional Cloud War Room - Ultimate V90.0")
+app = FastAPI(title="US Professional Cloud War Room - Ultimate V100.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,20 +17,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 💡 掌櫃的：未來若要串接真實 LINE 機器人，請在此填入您的 LINE Channel Access Token 與 User/Group ID
+# 💡 掌櫃的：請在此處填入您的 LINE Messaging API 權杖 (Channel Access Token) 與群組/用戶 ID
+# 範例: LINE_CHANNEL_ACCESS_TOKEN = "your_actual_token_here"
 LINE_CHANNEL_ACCESS_TOKEN = "" 
 
 def send_line_message(message: str):
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        return {"status": "simulated", "message": "已成功打包戰情報告，並推送到您的 LINE 智慧群組！"}
+        # 若尚未填入權杖，系統會回傳模擬成功並提示您填入
+        return {"status": "simulated", "message": "戰情報告已準備就緒！(請在 main.py 填入 LINE_CHANNEL_ACCESS_TOKEN 即可發送至真實 LINE)"}
+    
     url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
     data = {"messages": [{"type": "text", "text": message}]}
-    res = requests.post(url, headers=headers, json=data)
-    return res.json()
+    try:
+        res = requests.post(url, headers=headers, json=data)
+        if res.status_code == 200:
+            return {"status": "success", "message": "已成功透過 LINE API 推送到您的手機！"}
+        else:
+            return {"status": "error", "message": f"LINE API 回應錯誤: {res.text}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 def calculate_greeks(S, K, T, r, sigma, option_type="put"):
     if T <= 0 or sigma <= 0:
@@ -52,7 +61,7 @@ HTML_CONTENT = """
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>華爾街美股雲端專業旗艦戰情室 ｜ V90.0 完全體</title>
+    <title>華爾街美股雲端專業旗艦戰情室 ｜ V100.0 台股級體驗</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -60,8 +69,8 @@ HTML_CONTENT = """
     <!-- 頂部專業導航列 -->
     <header class="bg-[#121824] border-b border-[#1e293b] px-6 py-3 flex justify-between items-center shadow-lg">
         <div class="flex items-center space-x-3">
-            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V90.0</span>
-            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">全美股大數據掃描 + LINE 雲端自動推播</span>
+            <span class="text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ PRO CLOUD WAR ROOM V100.0</span>
+            <span class="text-xs bg-[#1e293b] text-[#38bdf8] px-2.5 py-1 rounded-full font-bold border border-[#38bdf8]/30">美股 50 檔大視野 + 真實 LINE 雲端推播</span>
         </div>
         <div class="flex items-center space-x-4 text-xs">
             <div class="flex bg-[#1e293b] border border-[#2a374a] rounded-lg p-0.5 space-x-1">
@@ -81,8 +90,8 @@ HTML_CONTENT = """
         <aside class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col">
             <div class="p-4 border-b border-[#1e293b] space-y-3">
                 <div class="flex justify-between items-center">
-                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📡 全美股大數據量價掃描</h2>
-                    <button onclick="runProScreener()" class="text-[10px] bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-2.5 py-1 rounded transition shadow">執行全市場掃描</button>
+                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider">📡 美股 50 檔大視野掃描</h2>
+                    <button onclick="runProScreener()" class="text-[10px] bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-2.5 py-1 rounded transition shadow">執行全面掃描</button>
                 </div>
                 <div class="flex gap-2">
                     <input id="customSymbol" type="text" placeholder="輸入美股代號 (例: AAPL, SPY)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-sm text-white uppercase focus:outline-none focus:border-[#38bdf8]">
@@ -139,7 +148,7 @@ HTML_CONTENT = """
         <aside class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 overflow-y-auto">
             <h2 class="text-sm font-black text-white mb-3 flex items-center justify-between">
                 <span>📊 期權風控與雲端自動推播</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V90.0 完全體</span>
+                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">V100.0 完全體</span>
             </h2>
 
             <div class="space-y-3 text-xs">
@@ -253,7 +262,7 @@ HTML_CONTENT = """
         let currentInterval = "1d";
         let currentOptionData = null;
 
-        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v90')) || [
+        let watchlist = JSON.parse(localStorage.getItem('my_watchlist_v100')) || [
             { symbol: "NVDA", name: "輝達", score: "🔥 強勢突破" },
             { symbol: "TSLA", name: "特斯拉", score: "💎 跌深反彈" },
             { symbol: "SPY", name: "標普500", score: "🛡️ 多頭安全" },
@@ -298,7 +307,7 @@ HTML_CONTENT = """
         }
 
         function saveWatchlist() {
-            localStorage.setItem('my_watchlist_v90', JSON.stringify(watchlist));
+            localStorage.setItem('my_watchlist_v100', JSON.stringify(watchlist));
         }
 
         function renderWatchlist() {
@@ -338,14 +347,14 @@ HTML_CONTENT = """
         }
 
         async function runProScreener() {
-            document.getElementById('chartTitle').innerText = "📡 全美股大數據量價掃描中（正在比對百檔標的）...";
+            document.getElementById('chartTitle').innerText = "📡 美股 50 檔大視野全景掃描中...";
             try {
                 const res = await fetch('/api/screener');
                 const data = await res.json();
                 if(data.screener_list && data.screener_list.length > 0) {
                     watchlist = data.screener_list;
                     renderWatchlist();
-                    alert(`[全市場掃描完成] 已透過大數據過濾出 ${watchlist.length} 檔當日強勢突破與跌深反彈標的！`);
+                    alert(`[全景掃描完成] 已從 50 檔重量級美股中過濾出 ${watchlist.length} 檔強勢突破與跌深反彈標的！`);
                     fetchStockData(watchlist[0].symbol);
                 }
             } catch(e) {
@@ -599,7 +608,7 @@ HTML_CONTENT = """
                     body: JSON.stringify({ message: text })
                 });
                 const result = await res.json();
-                alert(`[LINE 自動推播成功] 🚀 ${result.message}`);
+                alert(`[LINE 雲端推播] 🚀 ${result.message}`);
             } catch(e) {
                 alert('推播發送失敗');
             }
@@ -624,7 +633,7 @@ def serve_index():
 def api_line_push(payload: dict):
     msg = payload.get("message", "測試戰情報告")
     res = send_line_message(msg)
-    return {"status": "success", "message": res.get("message", "已成功推送到 LINE 群組！")}
+    return {"status": "success", "message": res.get("message", "已成功推送到 LINE！")}
 
 @app.get("/api/vix")
 def get_vix():
@@ -639,11 +648,13 @@ def get_vix():
 
 @app.get("/api/screener")
 def run_pro_screener():
-    # 💡 擴充為全美股大數據掃描池（涵蓋科技巨頭、AI、半導體、雲端、金融、生技與熱門 ETF）
+    # 💡 擴充為美股 50 檔核心旗艦掃描池（涵蓋美股七雄、AI晶片、半導體、雲端軟體、金融、生技與主力大盤 ETF）
     universe = [
         "NVDA", "TSLA", "AAPL", "MSFT", "PLTR", "AMZN", "AMD", "GOOGL", "SPY", "QQQ", 
         "NFLX", "COIN", "INTC", "META", "AVGO", "ARM", "SMCI", "MU", "QCOM", "TXN", 
-        "NFLX", "DIS", "BA", "JPM", "BAC", "XOM", "CVX", "WMT", "COST", "PFE", "ABBV"
+        "DIS", "BA", "JPM", "BAC", "XOM", "CVX", "WMT", "COST", "PFE", "ABBV",
+        "ORCL", "CRM", "ADBE", "IBM", "NOW", "SHOP", "UBER", "ABNB", "SNOW", "PANW",
+        "CAT", "GE", "UNH", "JNJ", "LLY", "V", "MA", "HD", "MCD", "IWM"
     ]
     results = []
     for sym in universe:
@@ -666,7 +677,7 @@ def run_pro_screener():
                 results.append({"symbol": sym, "name": "多頭安全標的", "score": "🛡️ 多頭安全"})
         except:
             continue
-    return {"screener_list": results[:12]}
+    return {"screener_list": results[:20]}
 
 @app.get("/api/quote/{symbol}")
 def get_stock_data(symbol: str, interval: str = "1d"):
