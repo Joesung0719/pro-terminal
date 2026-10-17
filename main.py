@@ -9,7 +9,7 @@ import requests
 import datetime
 import os
 
-app = FastAPI(title="US Professional Radar War Room - V9.8 Plotly Edition")
+app = FastAPI(title="US Professional Radar War Room - V9.8 Flagship Fully Integrated")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,7 +43,6 @@ def calculate_greeks(S, K, T, r, sigma, option_type="put"):
     }
 
 MARKET_UNIVERSE = [
-    # 費半 SOX
     {"symbol": "NVDA", "name": "輝達", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "TSM", "name": "台積電 ADR", "sector": "SOX", "market": "NYSE"},
     {"symbol": "AMD", "name": "超微半導體", "sector": "SOX", "market": "NASDAQ"},
@@ -54,8 +53,6 @@ MARKET_UNIVERSE = [
     {"symbol": "ARM", "name": "安謀科技", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "ASML", "name": "艾司摩爾", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "TXN", "name": "德州儀器", "sector": "SOX", "market": "NASDAQ"},
-
-    # 那斯達克 100
     {"symbol": "AAPL", "name": "蘋果", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "MSFT", "name": "微軟", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "GOOGL", "name": "Alphabet (Google)", "sector": "NASDAQ", "market": "NASDAQ"},
@@ -66,8 +63,6 @@ MARKET_UNIVERSE = [
     {"symbol": "COST", "name": "好市多 Costco", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "ADBE", "name": "奧多比 Adobe", "sector": "NASDAQ", "market": "NASDAQ"},
     {"symbol": "COIN", "name": "Coinbase 加密所", "sector": "NASDAQ", "market": "NASDAQ"},
-
-    # 道瓊 30
     {"symbol": "CAT", "name": "開拓重工", "sector": "DOW", "market": "NYSE"},
     {"symbol": "BA", "name": "波音公司", "sector": "DOW", "market": "NYSE"},
     {"symbol": "UNH", "name": "聯合健康集團", "sector": "DOW", "market": "NYSE"},
@@ -78,8 +73,6 @@ MARKET_UNIVERSE = [
     {"symbol": "WMT", "name": "沃爾瑪", "sector": "DOW", "market": "NYSE"},
     {"symbol": "IBM", "name": "國際商業機器 IBM", "sector": "DOW", "market": "NYSE"},
     {"symbol": "GS", "name": "高盛集團", "sector": "DOW", "market": "NYSE"},
-
-    # 紐約證交所主力
     {"symbol": "PLTR", "name": "帕蘭蒂爾科技", "sector": "NYSE", "market": "NYSE"},
     {"symbol": "JPM", "name": "摩根大通", "sector": "NYSE", "market": "NYSE"},
     {"symbol": "BAC", "name": "美國銀行", "sector": "NYSE", "market": "NYSE"},
@@ -88,8 +81,6 @@ MARKET_UNIVERSE = [
     {"symbol": "LLY", "name": "禮來藥廠", "sector": "NYSE", "market": "NYSE"},
     {"symbol": "NKE", "name": "耐吉 Nike", "sector": "NYSE", "market": "NYSE"},
     {"symbol": "UBER", "name": "優步 Uber", "sector": "NYSE", "market": "NYSE"},
-
-    # ETF 主力
     {"symbol": "SPY", "name": "標普500 ETF", "sector": "ETF", "market": "AMEX"},
     {"symbol": "QQQ", "name": "那斯達克100 ETF", "sector": "ETF", "market": "NASDAQ"},
     {"symbol": "SOXX", "name": "費城半導體 ETF", "sector": "ETF", "market": "NASDAQ"},
@@ -103,14 +94,35 @@ HTML_CONTENT = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>美股多空雷達戰情室 V9.8 ｜ Plotly 旗艦完全體</title>
+    <title>美股多空雷達戰情室 V9.8 旗艦完全體</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 引入台股同款 Plotly 專業繪圖庫 -->
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
+        :root {
+            --bg-main: #0b0e14;
+            --bg-card: #121824;
+            --border-col: #1e293b;
+            --text-main: #e2e8f0;
+        }
+        .theme-slate {
+            --bg-main: #0f172a;
+            --bg-card: #1e293b;
+            --border-col: #334155;
+            --text-main: #f8fafc;
+        }
+        .theme-dark {
+            --bg-main: #000000;
+            --bg-card: #0d0d0d;
+            --border-col: #262626;
+            --text-main: #e5e5e5;
+        }
+        body { background-color: var(--bg-main); color: var(--text-main); }
+        .bg-card { background-color: var(--bg-card); }
+        .border-theme { border-color: var(--border-col); }
+
         @media (max-width: 1024px) {
             #mainLayout { flex-direction: column !important; height: auto !important; overflow-y: auto !important; }
-            #leftSidebar, #rightSidebar, #centerMain { width: 100% !important; height: auto !important; border: none !important; border-bottom: 1px solid #1e293b !important; }
+            #leftSidebar, #rightSidebar, #centerMain { width: 100% !important; height: auto !important; border: none !important; border-bottom: 1px solid var(--border-col) !important; }
             #centerMain { order: 1 !important; }
             #rightSidebar { order: 2 !important; }
             #leftSidebar { order: 3 !important; max-height: 480px !important; }
@@ -119,35 +131,75 @@ HTML_CONTENT = """
             body { overflow-y: auto !important; height: auto !important; }
         }
         .pill-active { background-color: #234E70 !important; color: #ffffff !important; border-color: #38bdf8 !important; font-weight: 700 !important; }
-        .pill-inactive { background-color: #121824 !important; color: #64748b !important; border-color: #1e293b !important; }
+        .pill-inactive { background-color: var(--bg-card) !important; color: #64748b !important; border-color: var(--border-col) !important; }
     </style>
 </head>
-<body class="bg-[#0b0e14] text-[#e2e8f0] font-sans antialiased min-h-screen flex flex-col">
-    <!-- 頂部五大指數溫度計 -->
-    <header class="bg-[#121824] border-b border-[#1e293b] px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
+<body id="bodyRoot" class="font-sans antialiased min-h-screen flex flex-col">
+    <!-- 頂部大盤溫度計全市場看板 -->
+    <header class="bg-card border-b border-theme px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
         <div class="flex justify-between items-center">
             <div class="flex items-center space-x-2">
                 <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider drop-shadow">⚡ 美股多空雷達 V9.8</span>
-                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">Plotly 專業畫線完全體</span>
+                <span class="text-[10px] md:text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">完全對齊台股 V9.8</span>
+                <button onclick="toggleSettingsDrawer()" class="text-xs bg-[#1e293b] hover:bg-[#2a374a] text-slate-300 px-2 py-0.5 rounded border border-slate-600 transition">⚙️ 設定</button>
+                <button onclick="openChangeLogModal()" class="text-xs bg-[#1e293b] hover:bg-[#2a374a] text-amber-300 px-2 py-0.5 rounded border border-amber-500/40 transition">📜 改版紀錄</button>
             </div>
             <button onclick="fetchIndicesData()" class="bg-[#1e293b] hover:bg-[#2a374a] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold shrink-0">🔄 刷新溫度計</button>
         </div>
 
         <div class="grid grid-cols-5 grid-indices gap-1.5 text-xs font-mono">
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">🏛️ 道瓊</span><span id="idx_dji" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">💻 那指</span><span id="idx_ixic" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">⚡ 費半</span><span id="idx_sox" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
                 <span class="text-slate-400 font-bold">📊 標普</span><span id="idx_spx" class="font-bold text-white">--</span>
             </div>
-            <div class="bg-[#0b0e14] border border-[#1e293b] px-2 py-1.5 rounded flex justify-between items-center">
+            <div class="bg-[#0b0e14] border border-theme px-2 py-1.5 rounded flex justify-between items-center">
                 <span class="text-amber-400 font-bold">🔥 恐慌</span><span id="idx_vix" class="font-bold text-amber-400">--</span>
+            </div>
+        </div>
+
+        <!-- ⚙️ 可收合設定抽屜 (對齊台股 V9.8) -->
+        <div id="settingsDrawer" class="hidden bg-[#0b0e14] border border-theme rounded-lg p-3 mt-1.5 text-xs space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-theme pb-2">
+                <div class="flex items-center space-x-2">
+                    <span class="text-slate-400 font-bold">🎨 主題配色：</span>
+                    <label class="cursor-pointer flex items-center space-x-1">
+                        <input type="radio" name="themeRadio" value="default" checked onchange="switchTheme('default')">
+                        <span>極夜黑</span>
+                    </label>
+                    <label class="cursor-pointer flex items-center space-x-1">
+                        <input type="radio" name="themeRadio" value="slate" onchange="switchTheme('slate')">
+                        <span>台股深灰藍 (溫和護眼)</span>
+                    </label>
+                    <label class="cursor-pointer flex items-center space-x-1">
+                        <input type="radio" name="themeRadio" value="dark" onchange="switchTheme('dark')">
+                        <span>純黑 AMOLED</span>
+                    </label>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <span class="text-slate-400 font-bold">🔤 字體大小：</span>
+                    <button onclick="setFontSize('normal')" class="px-2 py-0.5 rounded bg-card border border-theme">標準</button>
+                    <button onclick="setFontSize('large')" class="px-2 py-0.5 rounded bg-card border border-theme">大</button>
+                    <button onclick="setFontSize('xlarge')" class="px-2 py-0.5 rounded bg-card border border-theme">特大</button>
+                </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-4 text-slate-300">
+                <div class="flex items-center space-x-2">
+                    <span>頸線天數 (N日)：</span>
+                    <input type="number" id="cfg_neckDays" value="20" min="5" max="60" class="w-14 bg-card border border-theme rounded px-1.5 py-0.5 text-center text-white" onchange="loadScreenerList()">
+                </div>
+                <div class="flex items-center space-x-2">
+                    <span>5日均量倍數 (量比)：</span>
+                    <input type="number" id="cfg_volRatio" value="1.2" step="0.1" min="1.0" max="3.0" class="w-16 bg-card border border-theme rounded px-1.5 py-0.5 text-center text-white" onchange="loadScreenerList()">
+                </div>
+                <span class="text-slate-500">※ 修改參數後左側篩選清單將即時重新計算過濾</span>
             </div>
         </div>
     </header>
@@ -155,9 +207,8 @@ HTML_CONTENT = """
     <!-- 主體區域 -->
     <div id="mainLayout" class="flex flex-1 overflow-hidden">
         <!-- 左側：多空實質篩選 ＋ 板塊分類 ＋ 股票清單 -->
-        <aside id="leftSidebar" class="w-80 bg-[#121824] border-r border-[#1e293b] flex flex-col shrink-0">
-            <div class="p-3 border-b border-[#1e293b] space-y-2">
-                <!-- 1. 多空方向切換 -->
+        <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
+            <div class="p-3 border-b border-theme space-y-2">
                 <div>
                     <label class="text-[11px] text-slate-400 font-bold block mb-1">🎯 選股多空方向：</label>
                     <div class="grid grid-cols-2 gap-1.5">
@@ -166,7 +217,6 @@ HTML_CONTENT = """
                     </div>
                 </div>
 
-                <!-- 2. 板塊分類選擇 -->
                 <div>
                     <label class="text-[11px] text-slate-400 font-bold block mb-1">🏛️ 市場板塊大池：</label>
                     <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded px-2.5 py-1.5 text-xs text-[#38bdf8] font-bold focus:outline-none focus:border-[#38bdf8]">
@@ -179,7 +229,6 @@ HTML_CONTENT = """
                     </select>
                 </div>
 
-                <!-- 3. 全美股穿透查詢輸入框 -->
                 <div class="flex gap-2">
                     <input id="customSymbol" type="text" placeholder="全美股代號 (例: NVDA, IONQ, BABA)" class="flex-1 bg-[#0b0e14] border border-[#2a374a] rounded px-3 py-1.5 text-xs text-white uppercase focus:outline-none focus:border-[#38bdf8]">
                     <button onclick="addCustomSymbol()" class="bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black px-3 py-1.5 rounded text-xs transition">穿透診斷</button>
@@ -188,12 +237,12 @@ HTML_CONTENT = """
             <div id="watchlist" class="flex-1 overflow-y-auto p-2 space-y-1.5"></div>
         </aside>
 
-        <!-- 中間：Plotly 原生多層圖表（支援畫趨勢線、方框與四圖完全同步） -->
-        <main id="centerMain" class="flex-1 flex flex-col bg-[#0b0e14] p-3 overflow-y-auto">
+        <!-- 中間：圖表區域 -->
+        <main id="centerMain" class="flex-1 flex flex-col p-3 overflow-y-auto">
             <div class="flex flex-wrap justify-between items-center gap-2 mb-1.5">
                 <div class="flex items-center space-x-2">
                     <h1 id="chartTitle" class="text-base md:text-xl font-black text-white tracking-wide">載入中...</h1>
-                    <div class="flex bg-[#121824] border border-[#1e293b] rounded p-0.5 space-x-1 text-xs">
+                    <div class="flex bg-card border border-theme rounded p-0.5 space-x-1 text-xs">
                         <button onclick="changeInterval('1d')" id="btn_1d" class="px-2.5 py-0.5 rounded font-bold bg-[#38bdf8] text-slate-950">日K</button>
                         <button onclick="changeInterval('1wk')" id="btn_1wk" class="px-2.5 py-0.5 rounded font-bold text-slate-400 hover:text-white">週K</button>
                     </div>
@@ -202,14 +251,14 @@ HTML_CONTENT = """
                     <div id="qualityTag" class="text-[10px] md:text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">
                         🛡️ 距頸線 ≤ 5%
                     </div>
-                    <div id="currentPriceTag" class="text-sm md:text-base font-bold bg-[#121824] px-3 py-1 rounded-lg border border-[#1e293b] shadow">
+                    <div id="currentPriceTag" class="text-sm md:text-base font-bold bg-card px-3 py-1 rounded-lg border border-theme shadow">
                         收盤: $-- (--%)
                     </div>
                 </div>
             </div>
 
-            <!-- 均線與指標開關膠囊列 -->
-            <div class="flex flex-wrap items-center gap-1.5 mb-2 text-xs">
+            <!-- 1. 上方：均線與指標開關膠囊列 -->
+            <div class="flex flex-wrap items-center gap-1.5 mb-1.5 text-xs">
                 <span class="text-slate-400 font-bold mr-1">📐 均線/指標:</span>
                 <button onclick="toggleIndicator('ma5')" id="pill_ma5" class="pill-active px-2 py-0.5 rounded border border-[#D97706] text-[#D97706] text-[11px] transition">5MA(橘)</button>
                 <button onclick="toggleIndicator('ma10')" id="pill_ma10" class="pill-inactive px-2 py-0.5 rounded border border-[#2563EB] text-[#2563EB] text-[11px] transition">10MA(藍)</button>
@@ -221,21 +270,34 @@ HTML_CONTENT = """
                 <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309] text-[#B45309] text-[11px] transition">20日頸線</button>
             </div>
 
-            <!-- Plotly 圖表主容器（原生具備 Modebar 工具列與 4 層圖表完全聯動） -->
-            <div id="plotlyChartContainer" class="bg-[#121824] border border-[#1e293b] rounded-xl p-2 w-full h-[620px] md:h-[680px]"></div>
+            <!-- 2. 中間：繁體中文線圖工具列 (位置移至 MA 下方、K 線上方置中) -->
+            <div class="flex justify-center items-center bg-card border border-theme py-1 px-3 rounded-lg text-xs text-slate-300 mb-2 gap-2 shadow">
+                <span class="font-bold text-[#38bdf8] mr-1">🛠️ 中文畫線工具:</span>
+                <button onclick="setPlotlyMode('drawline')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition" title="滑鼠按住拖曳畫趨勢線或水平線">📏 畫直線(趨勢/壓力)</button>
+                <button onclick="setPlotlyMode('drawrect')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition" title="畫盤整箱型區間">📦 畫方框(盤整箱)</button>
+                <button onclick="setPlotlyMode('drawcircle')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition" title="標記轉折圓圈">⭕ 畫圓形</button>
+                <button onclick="setPlotlyMode('eraseshape')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme text-red-400 transition" title="點擊線條刪除">🧹 橡皮擦</button>
+                <span class="text-slate-600">|</span>
+                <button onclick="setPlotlyMode('zoom')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition">🔍 框選放大</button>
+                <button onclick="setPlotlyMode('pan')" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition">✋ 拖曳平移</button>
+                <button onclick="resetPlotlyAxes()" class="tool-btn hover:text-white px-2 py-0.5 bg-[#0b0e14] rounded border border-theme transition">🏠 還原初始</button>
+            </div>
+
+            <!-- 3. 下方：Plotly 原生 4 層圖表容器 -->
+            <div id="plotlyChartContainer" class="bg-card border border-theme rounded-xl p-2 w-full h-[600px] md:h-[660px]"></div>
         </main>
 
         <!-- 右側：八大選擇權策略風控與 LINE 推播 -->
-        <aside id="rightSidebar" class="w-96 bg-[#121824] border-l border-[#1e293b] flex flex-col p-4 shrink-0">
+        <aside id="rightSidebar" class="w-96 bg-card border-l border-theme flex flex-col p-4 shrink-0">
             <h2 class="text-sm font-black text-white mb-2.5 flex items-center justify-between">
                 <span>📊 選擇權全市場策略風控</span>
-                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">真實到期日完全解鎖</span>
+                <span class="text-[10px] bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">真實市場數據直通</span>
             </h2>
 
             <div class="space-y-2.5 text-xs">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <div>
-                        <label class="text-slate-400 block mb-1">到期日 (市場全部到期日)</label>
+                        <label class="text-slate-400 block mb-1">到期日</label>
                         <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-[#0b0e14] border border-[#2a374a] rounded p-2 text-white font-bold focus:outline-none focus:border-[#38bdf8]">
                             <option value="">載入中...</option>
                         </select>
@@ -287,16 +349,16 @@ HTML_CONTENT = """
                     <div class="font-bold text-[#38bdf8] flex justify-between items-center text-[11px]">
                         <span>📈 Payoff 損益分佈預覽</span>
                     </div>
-                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-[#121824] p-1.5 rounded border border-[#1e293b]">
+                    <div class="grid grid-cols-2 gap-2 text-[11px] bg-[#121824] p-1.5 rounded border border-theme">
                         <div>最大獲利: <strong id="payoffMax" class="text-emerald-400">--</strong></div>
                         <div>最大虧損: <strong id="payoffMin" class="text-red-400">--</strong></div>
                     </div>
-                    <canvas id="payoffCanvas" height="75" class="w-full bg-[#121824] rounded border border-[#1e293b] mt-1"></canvas>
+                    <canvas id="payoffCanvas" height="75" class="w-full bg-[#121824] rounded border border-theme mt-1"></canvas>
                 </div>
 
                 <!-- Greeks 風險敏感度 -->
                 <div class="bg-[#0b0e14] p-2.5 rounded-lg border border-[#2a374a] space-y-1">
-                    <div class="font-bold text-[#38bdf8] border-b border-[#1e293b] pb-0.5 text-[11px]">⚡ Greeks 風險敏感度</div>
+                    <div class="font-bold text-[#38bdf8] border-b border-theme pb-0.5 text-[11px]">⚡ Greeks 風險敏感度</div>
                     <div class="grid grid-cols-2 gap-2 text-[11px]">
                         <div>Delta: <strong id="valDelta" class="text-white">-</strong></div>
                         <div>Theta: <strong id="valTheta" class="text-amber-400">-</strong></div>
@@ -317,17 +379,59 @@ HTML_CONTENT = """
         </aside>
     </div>
 
+    <!-- 📜 歷次改版紀錄 Modal (對齊台股 V9.8) -->
+    <div id="changeLogModal" class="fixed inset-0 bg-black/80 flex items-center justify-center hidden z-50 p-4">
+        <div class="bg-card border border-theme rounded-2xl p-6 w-full max-w-xl shadow-2xl space-y-4">
+            <div class="flex justify-between items-center border-b border-theme pb-2">
+                <div class="flex items-center space-x-2">
+                    <span class="text-lg">📜</span>
+                    <h3 class="text-base font-black text-white">美股多空雷達戰情室 ｜ 歷次版本更新紀錄</h3>
+                </div>
+                <button onclick="closeChangeLogModal()" class="text-slate-400 hover:text-white text-base">✕</button>
+            </div>
+            <div class="space-y-3 text-xs max-h-[420px] overflow-y-auto pr-2 text-slate-300 font-sans">
+                <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
+                    <div class="font-bold text-white text-sm">V9.8 旗艦完全體 (2026-10-17)</div>
+                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
+                        <li>全面導入 Plotly 專業多層圖表，原汁原味整合中文畫趨勢線、方框與橡皮擦。</li>
+                        <li>四圖（K線/布林、成交量、KD、MACD）共用 X 軸完全同步縮放與平移。</li>
+                        <li>補齊 120MA（桃紅）並支援均線即時膠囊開關切換。</li>
+                        <li>選擇權策略擴充為 8 大主流策略（Short Put, Covered Call, Spreads, Straddle）。</li>
+                        <li>拔除所有假數據 fallback，期權合約如實直通，無合約真實提示。</li>
+                        <li>加入自適應設定欄（深灰藍護眼主題、字體調節、篩選參數調整）。</li>
+                    </ul>
+                </div>
+                <div class="border-l-2 border-slate-600 pl-3 py-1">
+                    <div class="font-bold text-slate-300">V9.5 ~ V9.7 雲端整合版</div>
+                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
+                        <li>新增道瓊、那指、費半、標普、VIX 五大指數溫度計。</li>
+                        <li>LINE 官方 Messaging API 推播串接與 Webhook Group ID 綁定。</li>
+                        <li>夏令與冬令美股交易時間自動偵測與三段式智慧排程架構。</li>
+                    </ul>
+                </div>
+                <div class="border-l-2 border-slate-700 pl-3 py-1">
+                    <div class="font-bold text-slate-400">V1.0 ~ V9.0 核心引擎奠基</div>
+                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-400">
+                        <li>完成台股多空雷達 V9.8 標準色碼（紅漲綠跌、均線標準體系）。</li>
+                        <li>Black-Scholes 選擇權定價模型與 Greeks 敏感度計算引擎。</li>
+                    </ul>
+                </div>
+            </div>
+            <button onclick="closeChangeLogModal()" class="w-full bg-[#38bdf8] hover:bg-sky-500 text-slate-950 font-black py-2 rounded-lg text-xs transition">關 閉</button>
+        </div>
+    </div>
+
     <!-- LINE 戰報預覽視窗 -->
     <div id="lineModal" class="fixed inset-0 bg-black/75 flex items-center justify-center hidden z-50 p-4">
-        <div class="bg-[#121824] border border-[#1e293b] rounded-2xl p-5 w-full max-w-md shadow-2xl space-y-3">
-            <div class="flex justify-between items-center border-b border-[#1e293b] pb-2">
+        <div class="bg-card border border-theme rounded-2xl p-5 w-full max-w-md shadow-2xl space-y-3">
+            <div class="flex justify-between items-center border-b border-theme pb-2">
                 <div class="flex items-center space-x-2">
                     <span class="w-3 h-3 bg-[#06C755] rounded-full"></span>
                     <h3 class="text-sm font-black text-white">📲 美股多空雷達 V9.8 ｜ LINE 戰報</h3>
                 </div>
                 <button onclick="closeLineModal()" class="text-slate-400 hover:text-white text-sm">✕</button>
             </div>
-            <div class="bg-[#0b0e14] p-3.5 rounded-xl border border-[#2a374a] text-xs font-mono text-slate-300 space-y-1.5 whitespace-pre-wrap max-h-[340px] overflow-y-auto" id="linePreviewText"></div>
+            <div class="bg-[#0b0e14] p-3.5 rounded-xl border border-theme text-xs font-mono text-slate-300 space-y-1.5 whitespace-pre-wrap max-h-[340px] overflow-y-auto" id="linePreviewText"></div>
             <button onclick="closeLineModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-xs transition">確 認</button>
         </div>
     </div>
@@ -345,6 +449,29 @@ HTML_CONTENT = """
         let indState = {
             ma5: true, ma10: false, ma20: true, ma60: true, ma120: true, ma240: true, bb: false, neck: true
         };
+
+        function toggleSettingsDrawer() {
+            const drawer = document.getElementById('settingsDrawer');
+            drawer.classList.toggle('hidden');
+        }
+
+        function switchTheme(theme) {
+            const root = document.getElementById('bodyRoot');
+            root.className = "font-sans antialiased min-h-screen flex flex-col";
+            if (theme === 'slate') root.classList.add('theme-slate');
+            else if (theme === 'dark') root.classList.add('theme-dark');
+            if (currentRawData) renderPlotlyChart(currentRawData);
+        }
+
+        function setFontSize(size) {
+            const root = document.documentElement;
+            if (size === 'large') root.style.fontSize = '17px';
+            else if (size === 'xlarge') root.style.fontSize = '18.5px';
+            else root.style.fontSize = '16px';
+        }
+
+        function openChangeLogModal() { document.getElementById('changeLogModal').classList.remove('hidden'); }
+        function closeChangeLogModal() { document.getElementById('changeLogModal').classList.add('hidden'); }
 
         function setRadarMode(mode) {
             currentRadarMode = mode;
@@ -378,8 +505,10 @@ HTML_CONTENT = """
         }
 
         async function loadScreenerList() {
+            const neckDays = document.getElementById('cfg_neckDays') ? document.getElementById('cfg_neckDays').value : 20;
+            const volRatio = document.getElementById('cfg_volRatio') ? document.getElementById('cfg_volRatio').value : 1.2;
             try {
-                const res = await fetch(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}`);
+                const res = await fetch(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}&neck_days=${neckDays}&vol_ratio=${volRatio}`);
                 const data = await res.json();
                 universeData = data.screener_list;
                 renderWatchlist();
@@ -394,18 +523,18 @@ HTML_CONTENT = """
         function renderWatchlist() {
             const container = document.getElementById('watchlist');
             container.innerHTML = '';
-            if (universeData.length === 0) {
+            if (!universeData || universeData.length === 0) {
                 container.innerHTML = `<div class="p-4 text-center text-xs text-slate-500">目前時段無符合 ${currentRadarMode === 'LONG' ? '多方突破' : '空方破底'} 之標的</div>`;
                 return;
             }
             universeData.forEach((item, idx) => {
                 const div = document.createElement('div');
-                div.className = "flex items-center justify-between px-3 py-2 rounded-lg bg-[#0b0e14] hover:bg-[#1a2234] transition group border border-[#1e293b]";
+                div.className = "flex items-center justify-between px-3 py-2 rounded-lg bg-[#0b0e14] hover:bg-[#1a2234] transition group border border-theme";
                 div.innerHTML = `
                     <div onclick="fetchStockData('${item.symbol}')" class="flex-1 cursor-pointer">
                         <div class="font-bold text-white group-hover:text-[#38bdf8] text-xs flex justify-between">
                             <span>${item.symbol} <span class="text-[10px] text-amber-400">[${item.sector}]</span></span>
-                            <span class="text-[10px] text-emerald-400 bg-[#121824] px-1.5 py-0.5 rounded border border-emerald-500/20">${item.score}</span>
+                            <span class="text-[10px] text-emerald-400 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${item.score}</span>
                         </div>
                         <div class="text-[11px] text-slate-400 flex justify-between mt-0.5">
                             <span class="truncate max-w-[120px]">${item.name}</span>
@@ -436,24 +565,45 @@ HTML_CONTENT = """
             if (currentRawData) renderPlotlyChart(currentRawData);
         }
 
-        // ⭐ 台股同款 Plotly 專業多層圖表渲染函數
+        // ⭐ 控制 Plotly 畫線模式
+        function setPlotlyMode(mode) {
+            const el = document.getElementById('plotlyChartContainer');
+            if (!el || !el._fullLayout) return;
+            if (mode === 'drawline') Plotly.relayout(el, { dragmode: 'drawline' });
+            else if (mode === 'drawrect') Plotly.relayout(el, { dragmode: 'drawrect' });
+            else if (mode === 'drawcircle') Plotly.relayout(el, { dragmode: 'drawcircle' });
+            else if (mode === 'eraseshape') Plotly.relayout(el, { dragmode: 'eraseshape' });
+            else if (mode === 'zoom') Plotly.relayout(el, { dragmode: 'zoom' });
+            else if (mode === 'pan') Plotly.relayout(el, { dragmode: 'pan' });
+        }
+
+        function resetPlotlyAxes() {
+            const el = document.getElementById('plotlyChartContainer');
+            if (el) Plotly.relayout(el, { 'xaxis.autorange': true, 'yaxis.autorange': true });
+        }
+
         function renderPlotlyChart(data) {
             currentRawData = data;
             const dates = data.dates;
             const traces = [];
 
-            // 1. 主圖：K線 (台股紅漲綠跌)
+            // 取得當前主題背景色
+            const isSlate = document.getElementById('bodyRoot').classList.contains('theme-slate');
+            const isPureDark = document.getElementById('bodyRoot').classList.contains('theme-dark');
+            const paperBg = isSlate ? '#1e293b' : (isPureDark ? '#0d0d0d' : '#121824');
+            const plotBg = isSlate ? '#0f172a' : (isPureDark ? '#000000' : '#0b0e14');
+            const gridCol = isSlate ? '#334155' : (isPureDark ? '#262626' : '#1e293b');
+
+            // 1. K線
             traces.push({
-                x: dates,
-                open: data.opens, high: data.highs, low: data.lows, close: data.closes,
-                type: 'candlestick',
-                name: 'K線',
+                x: dates, open: data.opens, high: data.highs, low: data.lows, close: data.closes,
+                type: 'candlestick', name: 'K線',
                 increasing: { line: { color: '#C0392B' }, fillcolor: '#C0392B' },
                 decreasing: { line: { color: '#1E7E5A' }, fillcolor: '#1E7E5A' },
                 xaxis: 'x', yaxis: 'y'
             });
 
-            // 均線系統
+            // 均線
             if (indState.ma5) traces.push({ x: dates, y: data.ma5, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.5 }, name: '5MA', xaxis: 'x', yaxis: 'y' });
             if (indState.ma10) traces.push({ x: dates, y: data.ma10, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.5 }, name: '10MA', xaxis: 'x', yaxis: 'y' });
             if (indState.ma20) traces.push({ x: dates, y: data.ma20, type: 'scatter', mode: 'lines', line: { color: '#7C3AED', width: 2 }, name: '20MA(月線)', xaxis: 'x', yaxis: 'y' });
@@ -461,97 +611,52 @@ HTML_CONTENT = """
             if (indState.ma120) traces.push({ x: dates, y: data.ma120, type: 'scatter', mode: 'lines', line: { color: '#DB2777', width: 1.5 }, name: '120MA(半年)', xaxis: 'x', yaxis: 'y' });
             if (indState.ma240) traces.push({ x: dates, y: data.ma240, type: 'scatter', mode: 'lines', line: { color: '#64748b', width: 1.5, dash: 'dash' }, name: '240MA(年線)', xaxis: 'x', yaxis: 'y' });
 
-            // 布林通道
             if (indState.bb) {
                 traces.push({ x: dates, y: data.bb_up, type: 'scatter', mode: 'lines', line: { color: 'rgba(148, 163, 184, 0.55)', width: 1, dash: 'dot' }, name: '布林上軌', xaxis: 'x', yaxis: 'y' });
                 traces.push({ x: dates, y: data.bb_low, type: 'scatter', mode: 'lines', line: { color: 'rgba(148, 163, 184, 0.55)', width: 1, dash: 'dot' }, name: '布林下軌', xaxis: 'x', yaxis: 'y' });
             }
 
-            // 頸線
             if (indState.neck) {
                 traces.push({ x: dates, y: Array(dates.length).fill(data.neckline), type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 2, dash: 'dash' }, name: '20日頸線', xaxis: 'x', yaxis: 'y' });
             }
 
-            // 2. 副圖 1：成交量 ＋ 5日均量線
+            // 2. 成交量
             const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(192, 57, 43, 0.7)' : 'rgba(30, 126, 90, 0.7)');
-            traces.push({
-                x: dates, y: data.volumes, type: 'bar', marker: { color: volColors }, name: '成交量', xaxis: 'x', yaxis: 'y2'
-            });
-            traces.push({
-                x: dates, y: data.vol_ma5, type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 1.5, dash: 'dot' }, name: '5日均量', xaxis: 'x', yaxis: 'y2'
-            });
+            traces.push({ x: dates, y: data.volumes, type: 'bar', marker: { color: volColors }, name: '成交量', xaxis: 'x', yaxis: 'y2' });
+            traces.push({ x: dates, y: data.vol_ma5, type: 'scatter', mode: 'lines', line: { color: '#B45309', width: 1.5, dash: 'dot' }, name: '5日均量', xaxis: 'x', yaxis: 'y2' });
 
-            // 3. 副圖 2：KD 指標
+            // 3. KD
             traces.push({ x: dates, y: data.k, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.8 }, name: 'K(9)', xaxis: 'x', yaxis: 'y3' });
             traces.push({ x: dates, y: data.d, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.8 }, name: 'D(9)', xaxis: 'x', yaxis: 'y3' });
 
-            // 4. 副圖 3：MACD 柱狀 ＋ 雙線
+            // 4. MACD
             const macdColors = data.macd_hist.map(v => v >= 0 ? '#C0392B' : '#1E7E5A');
             traces.push({ x: dates, y: data.macd_hist, type: 'bar', marker: { color: macdColors }, name: 'MACD柱', xaxis: 'x', yaxis: 'y4' });
             traces.push({ x: dates, y: data.macd_dif, type: 'scatter', mode: 'lines', line: { color: '#D97706', width: 1.5 }, name: 'DIF', xaxis: 'x', yaxis: 'y4' });
             traces.push({ x: dates, y: data.macd_dea, type: 'scatter', mode: 'lines', line: { color: '#2563EB', width: 1.5 }, name: 'DEA', xaxis: 'x', yaxis: 'y4' });
 
             const layout = {
-                paper_bgcolor: '#121824',
-                plot_bgcolor: '#0b0e14',
+                paper_bgcolor: paperBg,
+                plot_bgcolor: plotBg,
                 font: { color: '#94a3b8', family: 'sans-serif', size: 11 },
                 margin: { l: 45, r: 45, t: 15, b: 25 },
                 showlegend: false,
-                xaxis: {
-                    type: 'category',
-                    rangeslider: { visible: false },
-                    gridcolor: '#1e293b',
-                    nticks: 8,
-                    tickangle: 0
-                },
-                // 4層圖表網格比例劃分
-                yaxis: { domain: [0.52, 1.0], gridcolor: '#1e293b', side: 'right' },
-                yaxis2: { domain: [0.36, 0.49], gridcolor: '#1e293b', side: 'right', title: '成交量' },
-                yaxis3: { domain: [0.19, 0.33], gridcolor: '#1e293b', range: [0, 100], side: 'right', title: 'KD' },
-                yaxis4: { domain: [0.0, 0.16], gridcolor: '#1e293b', side: 'right', title: 'MACD' },
+                xaxis: { type: 'category', rangeslider: { visible: false }, gridcolor: gridCol, nticks: 8 },
+                yaxis: { domain: [0.52, 1.0], gridcolor: gridCol, side: 'right' },
+                yaxis2: { domain: [0.36, 0.49], gridcolor: gridCol, side: 'right', title: '量' },
+                yaxis3: { domain: [0.19, 0.33], gridcolor: gridCol, range: [0, 100], side: 'right', title: 'KD' },
+                yaxis4: { domain: [0.0, 0.16], gridcolor: gridCol, side: 'right', title: 'MACD' },
                 hovermode: 'x unified',
-                dragmode: 'zoom'
+                dragmode: 'drawline',
+                newshape: { line: { color: '#facc15', width: 2 } }
             };
 
             const config = {
                 responsive: true,
-                displaylogo: false,
-                modeBarButtonsToAdd: ['drawline', 'drawopenpath', 'drawrect', 'drawcircle', 'eraseshape']
+                displayModeBar: false // 隱藏原生工具列，完全由中央中文列控制
             };
 
             Plotly.newPlot('plotlyChartContainer', traces, layout, config);
-            translatePlotlyToolbar();
-        }
-
-        // 繁體中文工具列翻譯腳本 (100% 對齊台股 V9.8)
-        function translatePlotlyToolbar() {
-            const zhMap = {
-                "Download plot as a png": "下載圖表為 PNG 圖片",
-                "Zoom": "框選放大",
-                "Pan": "拖曳平移",
-                "Box Select": "方框選取",
-                "Lasso Select": "套索選取",
-                "Draw line": "畫直線 (趨勢線/支撐壓力線)",
-                "Draw open Freeform": "自由手繪筆",
-                "Draw closed Freeform": "畫封閉圖形",
-                "Draw circle": "畫圓圈 (標記關鍵位置)",
-                "Draw rectangle": "畫方框 (標記盤整箱型區間)",
-                "Erase active shape": "橡皮擦 (點選畫線後按此刪除)",
-                "Zoom in": "放大檢視",
-                "Zoom out": "縮小檢視",
-                "Autoscale": "自動適應比例",
-                "Reset axes": "還原初始畫面 (小房子)"
-            };
-            setTimeout(() => {
-                const btns = document.querySelectorAll('.modebar-btn');
-                btns.forEach(btn => {
-                    const t = btn.getAttribute('data-title');
-                    if (t && zhMap[t]) {
-                        btn.setAttribute('data-title', zhMap[t]);
-                        btn.setAttribute('title', zhMap[t]);
-                    }
-                });
-            }, 500);
         }
 
         async function fetchStockData(symbol) {
@@ -585,14 +690,24 @@ HTML_CONTENT = """
             }
         }
 
+        // ⭐ 真實期權鏈直通，絕不偽造
         async function loadOptionChain(symbol) {
+            const expSelect = document.getElementById('expDateSelect');
+            const strikeSelect = document.getElementById('strikeSelect');
+            expSelect.innerHTML = '<option value="">查詢真實期權鏈中...</option>';
+            strikeSelect.innerHTML = '<option value="">請選擇到期日...</option>';
+
             try {
                 const res = await fetch(`/api/options/${symbol}`);
                 const data = await res.json();
                 currentOptionData = data.chain;
-                const expSelect = document.getElementById('expDateSelect');
                 expSelect.innerHTML = '';
                 
+                if (!data.expirations || data.expirations.length === 0) {
+                    expSelect.innerHTML = '<option value="">⚠️ 此標的目前無期權合約或非交易時段</option>';
+                    return;
+                }
+
                 data.expirations.forEach(exp => {
                     const opt = document.createElement('option');
                     opt.value = exp;
@@ -600,7 +715,9 @@ HTML_CONTENT = """
                     expSelect.appendChild(opt);
                 });
                 onExpirationChange();
-            } catch(e) {}
+            } catch(e) {
+                expSelect.innerHTML = '<option value="">⚠️ 期權鏈取得失敗</option>';
+            }
         }
 
         function onExpirationChange() {
@@ -713,26 +830,19 @@ HTML_CONTENT = """
                 const p = minP + (x / w) * (maxP - minP);
                 let profit = 0;
 
-                if (strategy === 'csp') {
-                    profit = p >= strike ? premium : premium - (strike - p);
-                } else if (strategy === 'cc') {
-                    profit = p <= strike ? premium : premium - (p - strike);
-                } else if (strategy === 'long_call') {
-                    profit = p >= strike ? (p - strike) - premium : -premium;
-                } else if (strategy === 'long_put') {
-                    profit = p <= strike ? (strike - p) - premium : -premium;
-                } else if (strategy === 'bull_call') {
+                if (strategy === 'csp') profit = p >= strike ? premium : premium - (strike - p);
+                else if (strategy === 'cc') profit = p <= strike ? premium : premium - (p - strike);
+                else if (strategy === 'long_call') profit = p >= strike ? (p - strike) - premium : -premium;
+                else if (strategy === 'long_put') profit = p <= strike ? (strike - p) - premium : -premium;
+                else if (strategy === 'bull_call') {
                     const upper = strike * 1.05;
-                    const val = Math.min(Math.max(p - strike, 0), upper - strike);
-                    profit = val - premium;
+                    profit = Math.min(Math.max(p - strike, 0), upper - strike) - premium;
                 } else if (strategy === 'bear_put') {
                     const lower = strike * 0.95;
-                    const val = Math.min(Math.max(strike - p, 0), strike - lower);
-                    profit = val - premium;
+                    profit = Math.min(Math.max(strike - p, 0), strike - lower) - premium;
                 } else if (strategy === 'bull_put') {
                     const lower = strike * 0.95;
-                    const loss = Math.min(Math.max(strike - p, 0), strike - lower);
-                    profit = premium - loss;
+                    profit = premium - Math.min(Math.max(strike - p, 0), strike - lower);
                 } else if (strategy === 'straddle') {
                     profit = Math.abs(p - strike) - (premium * 1.8);
                 }
@@ -810,7 +920,7 @@ def get_indices():
     return results
 
 @app.get("/api/screener")
-def run_v98_screener(sector: str = "ALL", mode: str = "LONG"):
+def run_v98_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, vol_ratio: float = 1.2):
     target_pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
     results = []
     
@@ -819,7 +929,7 @@ def run_v98_screener(sector: str = "ALL", mode: str = "LONG"):
         try:
             t = yf.Ticker(sym)
             df = t.history(period="3mo")
-            if df.empty or len(df) < 25:
+            if df.empty or len(df) < (neck_days + 5):
                 continue
             c = float(df['Close'].iloc[-1])
             o = float(df['Open'].iloc[-1])
@@ -827,25 +937,24 @@ def run_v98_screener(sector: str = "ALL", mode: str = "LONG"):
             v_ma5 = float(df['Volume'].shift(1).rolling(5).mean().iloc[-1])
             ma20 = float(df['Close'].rolling(20).mean().iloc[-1])
             
-            high_neck = float(df['High'].iloc[-21:-1].max())
-            low_neck = float(df['Low'].iloc[-21:-1].min())
-            v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
+            high_neck = float(df['High'].iloc[-(neck_days+1):-1].max())
+            low_neck = float(df['Low'].iloc[-(neck_days+1):-1].min())
+            cur_v_ratio = round(v / v_ma5, 1) if v_ma5 > 0 else 1.0
 
-            # 嚴格篩選：未達標者直接略過，不列入清單
             if mode == "LONG":
-                if not (c > high_neck and c > o and c > ma20 and v_ratio >= 1.2):
+                if not (c > high_neck and c > o and c > ma20 and cur_v_ratio >= vol_ratio):
                     continue
                 dist_neck = round(((c / high_neck) - 1.0) * 100.0, 1)
                 score = "🔥 暴量突破"
             else:
-                if not (c < low_neck and c < o and c < ma20 and v_ratio >= 1.2):
+                if not (c < low_neck and c < o and c < ma20 and cur_v_ratio >= vol_ratio):
                     continue
                 dist_neck = round(((c / low_neck) - 1.0) * 100.0, 1)
                 score = "⚡ 破底轉弱"
                 
             results.append({
                 "symbol": sym, "name": item["name"], "sector": item["sector"],
-                "score": score, "dist_neck_pct": dist_neck, "v_ratio": v_ratio
+                "score": score, "dist_neck_pct": dist_neck, "v_ratio": cur_v_ratio
             })
         except:
             continue
@@ -859,7 +968,6 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     if df.empty:
         raise HTTPException(status_code=404, detail="Symbol not found")
 
-    # 1. 均線系統
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
@@ -867,15 +975,12 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     df['MA120'] = df['Close'].rolling(window=120, min_periods=30).mean()
     df['MA240'] = df['Close'].rolling(window=240, min_periods=60).mean()
     
-    # 2. 布林通道
     bb_std = df['Close'].rolling(window=20).std(ddof=0)
     df['BB_UP'] = df['MA20'] + 2.0 * bb_std
     df['BB_LOW'] = df['MA20'] - 2.0 * bb_std
 
-    # 3. 5日均量線
     df['Vol_MA5'] = df['Volume'].shift(1).rolling(5, min_periods=3).mean()
 
-    # 4. KD (9, 3, 3)
     low9 = df['Low'].rolling(9, min_periods=9).min()
     high9 = df['High'].rolling(9, min_periods=9).max()
     rsv = ((df['Close'] - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
@@ -890,7 +995,6 @@ def get_quote_data(symbol: str, interval: str = "1d"):
     df['K'] = k_vals
     df['D'] = d_vals
 
-    # 5. MACD (12, 26, 9)
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['DIF'] = ema12 - ema26
@@ -977,7 +1081,6 @@ def get_options(symbol: str):
     ticker = yf.Ticker(symbol.strip().upper())
     expirations = ticker.options
     
-    # 只要市場有，完全如實輸出，絕不人為限制筆數
     if expirations and len(expirations) > 0:
         chain_data = {}
         for exp in expirations:
