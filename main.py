@@ -352,7 +352,8 @@ def calc_neckline(df: pd.DataFrame, neck_days: int, mode: str):
     if len(df) < neck_days + 2:
         return None
     win = df.iloc[-(neck_days + 1):-1]
-    return float(win["High"].max()) if mode == "LONG" else float(win["Low"].min())
+    v = float(win["High"].max()) if mode == "LONG" else float(win["Low"].min())
+    return round(v, 2)
 
 
 def quality_badge(mode: str, spot: float, neck: float, ma20) -> tuple:
@@ -362,15 +363,16 @@ def quality_badge(mode: str, spot: float, neck: float, ma20) -> tuple:
         dist = (spot / neck - 1.0) * 100.0
         if dist <= 0:
             return "⏳ 尚未突破頸線", dist
-        if dist <= 5.0 and ma20 is not None and spot >= ma20:
-            return "🛡️ 距頸線 ≤ 5% 且站上月線", dist
-        return "⚠️ 乖離偏遠或月線下", dist
+        # 台股回測顯示「距頸線遠近」對後續報酬沒有穩定影響，不再以 5% 作為警告；只看是否站上月線
+        if ma20 is None:
+            return "✅ 已突破（月線資料不足）", dist
+        return ("✅ 已突破且站上月線", dist) if spot >= ma20 else ("⚠️ 已突破但在月線下", dist)
     dist = (neck / spot - 1.0) * 100.0
     if dist <= 0:
         return "⏳ 尚未跌破頸線", dist
-    if dist <= 5.0 and ma20 is not None and spot <= ma20:
-        return "🛡️ 距跌破線 ≤ 5% 且在月線下", dist
-    return "⚠️ 跌幅已遠或仍在月線上", dist
+    if ma20 is None:
+        return "✅ 已跌破（月線資料不足）", dist
+    return ("✅ 已跌破且在月線下", dist) if spot <= ma20 else ("⚠️ 已跌破但仍在月線上", dist)
 
 
 def week52_stats(df_daily):
