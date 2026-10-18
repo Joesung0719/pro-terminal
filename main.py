@@ -1293,16 +1293,28 @@ HTML_CONTENT = r"""
 body{background-color:var(--bg-main);color:var(--text-main);}
 .bg-card{background-color:var(--bg-card);} .border-theme{border-color:var(--border-col);}
 .text-muted{color:var(--text-muted);} .bg-input{background-color:var(--input-bg);}
-@media (max-width:1024px){
- #mainLayout{flex-direction:column!important;height:auto!important;overflow-y:auto!important;}
+#leftSidebar{width:clamp(270px,21vw,384px)!important;}
+#rightSidebar{width:clamp(310px,25vw,461px)!important;}
+/* 平板／小筆電（≤1280px）：圖表獨佔一整列，下面左右並排「清單｜選擇權」，避免三欄把圖表擠到只剩一小塊 */
+@media (max-width:1280px){
+ #mainLayout{flex-direction:row!important;flex-wrap:wrap!important;align-content:flex-start;height:auto!important;overflow-y:auto!important;}
+ #centerMain{order:1!important;flex:none!important;width:100%!important;height:auto!important;border:none!important;}
+ #leftSidebar{order:2!important;width:42%!important;max-height:640px!important;border-top:1px solid var(--border-col)!important;}
+ #rightSidebar{order:3!important;width:58%!important;height:auto!important;max-height:640px!important;border-top:1px solid var(--border-col)!important;}
+ body{overflow-y:auto!important;height:auto!important;}
+}
+/* 手機／窄螢幕（≤820px）：全部直向堆疊 */
+@media (max-width:820px){
+ #mainLayout{flex-direction:column!important;flex-wrap:nowrap!important;}
  #leftSidebar,#rightSidebar,#centerMain{width:100%!important;height:auto!important;border:none!important;border-bottom:1px solid var(--border-col)!important;}
- #centerMain{order:1!important;} #rightSidebar{order:2!important;} #leftSidebar{order:3!important;max-height:480px!important;}
+ #centerMain{order:1!important;} #rightSidebar{order:2!important;max-height:none!important;} #leftSidebar{order:3!important;max-height:480px!important;}
+}
+@media (max-width:1024px){
  .grid-indices{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
  .grid-indices>div:last-child{grid-column:span 2/span 2!important;}
  .grid-indices>div{flex-wrap:wrap;gap:2px 6px;}
  .grid-indices>div>span:first-child{white-space:nowrap;}
  .grid-indices{font-size:0.82rem;}
- body{overflow-y:auto!important;height:auto!important;}
 }
 .pill-active{background-color:#234E70!important;color:#fff!important;font-weight:700!important;}
 .pill-inactive{background-color:var(--bg-card)!important;color:#64748b!important;}
@@ -1648,12 +1660,12 @@ let uniRetry = null;
 function sectorTag(k) { return (sectorLabels[k] || k || '').replace(/^\S+\s/, ''); }
 function uniText(u) {
   if (!u) return '';
-  let t = `股票池 ${u.total} 檔｜來源：${u.source}`;
-  if (u.age_min != null) t += `｜資料更新於 ${u.age_min < 1 ? '剛剛' : u.age_min + ' 分鐘前'}`;
+  let t = `股票池 ${u.total} 檔`;
+  if (u.age_min != null) t += `｜更新於 ${u.age_min < 1 ? '剛剛' : u.age_min + ' 分鐘前'}`;
   if (u.refreshing) t += `｜更新中 ${u.progress}/${u.progress_total}`;
-  if (u.note) t += `｜${u.note}`;
   return t;
 }
+function uniTip(u) { return u ? `來源：${u.source}${u.note ? '｜' + u.note : ''}${u.last_err ? '｜最近錯誤：' + u.last_err : ''}` : ''; }
 async function loadUniverseMeta() {
   try {
     const d = await api('/api/universe');
@@ -1699,12 +1711,12 @@ async function loadWeek52List() {
   const data = await api(`/api/week52?kind=${listTab}&sector=${currentSector}`);
   universeData = data.list;
   let t = `已掃描 ${data.scanned} 檔`;
-  if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，8 秒後自動更新｜` + t;
-  if (data.failed) t += `，${data.failed} 檔取不到資料`;
+  if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，自動更新中`;
+  if (data.failed && (!data.universe || data.universe.ready)) t += `，${data.failed} 檔取不到資料`;
   if (data.insufficient) t += `，${data.insufficient} 檔上市未滿一年(不納入)`;
   if (data.partial) t += '｜盤中：以當下最新價計算，收盤後才是定案';
   if (data.universe) t += '｜' + uniText(data.universe);
-  note.textContent = t;
+  note.textContent = t; note.title = uniTip(data.universe);
   scheduleUniRetry(data.universe);
   const box = document.getElementById('watchlist');
   box.innerHTML = '';
@@ -1745,11 +1757,11 @@ async function loadScreenerList() {
     const data = await api(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}&neck_days=${neckDays()}&vol_ratio=${volRatio()}`);
     universeData = data.screener_list;
     let t = `已掃描 ${data.scanned} 檔`;
-    if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，8 秒後自動更新｜` + t;
-    if (data.failed) t += `，${data.failed} 檔取不到資料`;
+    if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，自動更新中`;
+    if (data.failed && (!data.universe || data.universe.ready)) t += `，${data.failed} 檔取不到資料`;
     if (data.partial_volume) t += '｜盤中成交量尚未累積完整，量比會偏低';
     if (data.universe) t += '｜' + uniText(data.universe);
-    note.textContent = t;
+    note.textContent = t; note.title = uniTip(data.universe);
     scheduleUniRetry(data.universe);
     renderWatchlist();
   } catch (e) { note.textContent = ''; setStatus('篩選失敗：' + e.message, true); }
