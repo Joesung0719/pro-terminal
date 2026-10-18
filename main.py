@@ -24,7 +24,7 @@ except Exception:  # 需要在 requirements.txt 加入 tzdata
     ET = None
     TPE = None
 
-APP_VERSION = "V10.0"
+APP_VERSION = "V10.1"
 
 app = FastAPI(title=f"US Professional Radar War Room - {APP_VERSION}")
 
@@ -212,7 +212,7 @@ def risk_free_rate():
     return 0.045, "預設假設 4.5%（^IRX 取得失敗）"
 
 
-MARKET_UNIVERSE = [
+WATCHLIST_43 = [
     {"symbol": "NVDA", "name": "輝達", "sector": "SOX", "market": "NASDAQ"},
     {"symbol": "TSM", "name": "台積電 ADR", "sector": "SOX", "market": "NYSE"},
     {"symbol": "AMD", "name": "超微半導體", "sector": "SOX", "market": "NASDAQ"},
@@ -257,8 +257,155 @@ MARKET_UNIVERSE = [
     {"symbol": "DIA", "name": "道瓊工業 ETF", "sector": "ETF", "market": "AMEX"},
     {"symbol": "IWM", "name": "羅素2000小型股 ETF", "sector": "ETF", "market": "AMEX"}
 ]
-UNIVERSE_SYMBOLS = [x["symbol"] for x in MARKET_UNIVERSE]
-UNIVERSE_BY_SYMBOL = {x["symbol"]: x for x in MARKET_UNIVERSE}
+
+# ------------------------------------------------------------------------------
+# 掃描股票池：標普500 ＋ 那斯達克100（約 500 檔，GICS 產業分類）
+#   載入順序：① 同資料夾 us_universe.json（可直接用回測產生的 us_backtest_universe.json 改名）
+#            ② 上次成功抓到的 us_universe_cache.json（30 天內）
+#            ③ 啟動後背景向維基百科抓最新成分股
+#            ④ 以上皆失敗 → 退回原本 43 檔觀察名單（畫面會明確標示）
+# 原本 43 檔固定保留為「我的觀察名單」並保留中文名稱。
+# ------------------------------------------------------------------------------
+import json as _json
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UNIVERSE_FILE = os.path.join(_BASE_DIR, "us_universe.json")
+UNIVERSE_CACHE = os.path.join(_BASE_DIR, "us_universe_cache.json")
+
+SECTOR_ZH = {
+    "Information Technology": "💻 資訊科技",
+    "Health Care": "🏥 醫療保健",
+    "Financials": "🏦 金融",
+    "Consumer Discretionary": "🛍️ 非必需消費",
+    "Communication Services": "📡 通訊服務",
+    "Industrials": "🏭 工業",
+    "Consumer Staples": "🛒 必需消費",
+    "Energy": "🛢️ 能源",
+    "Utilities": "💡 公用事業",
+    "Real Estate": "🏢 房地產",
+    "Materials": "⛏️ 原物料",
+    "ETF": "📊 主力 ETF",
+    "OTHER": "❔ 其他／未分類",
+}
+# 原 43 檔中，成分股名單可能沒有的外國 ADR 的產業（人工標註）
+_ORIG_SECTOR_FALLBACK = {"TSM": "Information Technology", "ASML": "Information Technology",
+                         "ARM": "Information Technology"}
+
+_UNI_LOCK = threading.Lock()
+_UNI_META = {"source": "內建43檔", "built": None, "note": ""}
+MARKET_UNIVERSE = []
+UNIVERSE_SYMBOLS = []
+UNIVERSE_BY_SYMBOL = {}
+
+
+def _norm_sym(x) -> str:
+    return str(x).strip().upper().replace(".", "-")
+
+
+def _build_universe(rows, source):
+    """rows: [[ticker, sector], ...]；與 43 檔觀察名單合併後設為目前股票池。"""
+    sec_map = {}
+    for r in rows or []:
+        try:
+            t, sec = _norm_sym(r[0]), (str(r[1]).strip() if len(r) > 1 else "")
+        except Exception:
+            continue
+        if t and t != "NAN" and re.fullmatch(r"[A-Z0-9\-]{1,8}", t):
+            sec_map.setdefault(t, sec)
+    items, seen = [], set()
+    for w in WATCHLIST_43:
+        sym = w["symbol"]
+        if w["sector"] == "ETF":
+            sec = "ETF"
+        else:
+            sec = sec_map.get(sym) or _ORIG_SECTOR_FALLBACK.get(sym, "OTHER")
+        items.append({"symbol": sym, "name": w["name"], "sector": sec if sec in SECTOR_ZH else "OTHER",
+                      "market": w["market"], "watch": True})
+        seen.add(sym)
+    for t, sec in sorted(sec_map.items()):
+        if t in seen:
+            continue
+        items.append({"symbol": t, "name": t, "sector": sec if sec in SECTOR_ZH else "OTHER",
+                      "market": "US", "watch": False})
+    global MARKET_UNIVERSE, UNIVERSE_SYMBOLS, UNIVERSE_BY_SYMBOL
+    with _UNI_LOCK:
+        MARKET_UNIVERSE = items
+        UNIVERSE_SYMBOLS = [x["symbol"] for x in items]
+        UNIVERSE_BY_SYMBOL = {x["symbol"]: x for x in items}
+        _UNI_META.update({"source": source, "built": _utc_now().isoformat(timespec="seconds") if "_utc_now" in globals() else ""})
+    return len(items)
+
+
+def _read_universe_file(path, max_age_days=None):
+    try:
+        if not os.path.exists(path):
+            return None
+        if max_age_days is not None and (time.time() - os.path.getmtime(path)) > max_age_days * 86400:
+            return None
+        rows = _json.load(open(path, encoding="utf-8"))
+        if isinstance(rows, list) and len(rows) >= 100:
+            return rows
+    except Exception:
+        pass
+    return None
+
+
+_WIKI_UA = {"User-Agent": "Mozilla/5.0 (compatible; USRadar/10.1)"}
+
+
+def _wiki_tables(url):
+    import io
+    r = requests.get(url, headers=_WIKI_UA, timeout=20)
+    r.raise_for_status()
+    try:
+        return pd.read_html(io.StringIO(r.text))
+    except ImportError:
+        return pd.read_html(io.StringIO(r.text), flavor="bs4")
+
+
+def fetch_universe_online():
+    """向維基百科抓標普500＋那斯達克100成分股；回傳 (rows, 訊息)。"""
+    uni, msgs = {}, []
+    try:
+        for t in _wiki_tables("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"):
+            if "Symbol" in t.columns:
+                col = "GICS Sector" if "GICS Sector" in t.columns else None
+                for _, r in t.iterrows():
+                    uni.setdefault(_norm_sym(r["Symbol"]), str(r[col]) if col else "")
+                break
+        msgs.append(f"S&P500 {len(uni)} 檔")
+    except Exception as e:
+        msgs.append(f"S&P500 失敗:{type(e).__name__}")
+    n0 = len(uni)
+    try:
+        for t in _wiki_tables("https://en.wikipedia.org/wiki/Nasdaq-100"):
+            col = next((c for c in t.columns if str(c).strip() in ("Ticker", "Symbol")), None)
+            if col is not None and len(t) >= 80:
+                sec = next((c for c in t.columns if "Sector" in str(c)), None)
+                for _, r in t.iterrows():
+                    uni.setdefault(_norm_sym(r[col]), str(r[sec]) if sec else "")
+                break
+        msgs.append(f"Nasdaq100 新增 {len(uni) - n0} 檔")
+    except Exception as e:
+        msgs.append(f"Nasdaq100 失敗:{type(e).__name__}")
+    rows = sorted([[k, v] for k, v in uni.items() if k and k != "NAN"])
+    return rows, "；".join(msgs)
+
+
+def init_universe():
+    """同步、快速：先用本機檔案或 43 檔，讓服務立刻可用。"""
+    rows = _read_universe_file(UNIVERSE_FILE)
+    if rows:
+        _UNI_META["note"] = ""
+        return _build_universe(rows, "us_universe.json（標普500＋那斯達克100）")
+    rows = _read_universe_file(UNIVERSE_CACHE, 30)
+    if rows:
+        return _build_universe(rows, "上次抓取的成分股快取")
+    _UNI_META["note"] = "尚未取得成分股名單，暫用內建 43 檔"
+    return _build_universe([], "內建43檔（成分股名單尚未取得）")
+
+
+init_universe()
 
 
 # ==============================================================================
@@ -405,7 +552,7 @@ def _series(s: pd.Series, nd=2):
 
 
 # ==============================================================================
-# 全市場日K批次下載（一次抓完 42 檔，快取 5 分鐘；取代原本逐檔循序抓取）
+# 全市場日K：背景執行緒分批下載並存放，請求時直接讀取（不在請求當下下載）
 # ==============================================================================
 def _split_download(raw, symbols):
     out = {}
@@ -435,22 +582,129 @@ def _split_download(raw, symbols):
     return out
 
 
-def load_universe_daily():
-    """全股票池 1 年日K（52 週高低需要完整一年）。取到不足 60% 就重試一次。"""
-    def _load():
-        data = {}
-        for attempt in range(2):
-            raw = yf.download(
-                " ".join(UNIVERSE_SYMBOLS), period="1y", group_by="ticker",
-                threads=True, progress=False, auto_adjust=False
-            )
-            data = _split_download(raw, UNIVERSE_SYMBOLS)
-            if len(data) >= len(UNIVERSE_SYMBOLS) * 0.6:
-                break
-            time.sleep(1.5)
-        return data
+_STORE = {"data": {}, "stamp": {}, "cycle_done": None, "cycle_secs": None,
+          "progress": 0, "total": 0, "running": False, "last_err": "", "cycles": 0}
+_STORE_LOCK = threading.Lock()
+_BATCH = 40
 
-    return cached(("universe_daily",), 300, _load) or {}
+
+def load_universe_daily():
+    """回傳背景程序已抓好的 1 年日K（symbol → DataFrame）。不在請求當下才下載，避免逾時與限流。"""
+    with _STORE_LOCK:
+        return dict(_STORE["data"])
+
+
+def _download_batch(syms):
+    raw = yf.download(" ".join(syms), period="1y", group_by="ticker", threads=4,
+                      progress=False, auto_adjust=False)
+    return _split_download(raw, syms)
+
+
+def _refresh_cycle():
+    """抓一輪全部股票：觀察名單優先；每批 40 檔；缺的逐檔補抓；失敗者保留舊資料。"""
+    syms = list(UNIVERSE_SYMBOLS)
+    watch = [x["symbol"] for x in MARKET_UNIVERSE if x.get("watch")]
+    wset = set(watch)
+    order = watch + [s for s in syms if s not in wset]
+    t0 = time.time()
+    with _STORE_LOCK:
+        _STORE["total"] = len(order)
+        _STORE["progress"] = 0
+        _STORE["running"] = True
+    missing = []
+    for k in range(0, len(order), _BATCH):
+        batch = order[k:k + _BATCH]
+        got = {}
+        try:
+            got = _download_batch(batch)
+        except Exception as e:
+            _STORE["last_err"] = f"{type(e).__name__}: {str(e)[:120]}"
+        now = time.time()
+        with _STORE_LOCK:
+            for sym, df in got.items():
+                _STORE["data"][sym] = df
+                _STORE["stamp"][sym] = now
+            _STORE["progress"] = min(len(order), k + len(batch))
+        missing += [s for s in batch if s not in got]
+        time.sleep(1.5)
+    # 逐檔補抓缺的（最多 60 檔，避免拖太久）
+    for sym in missing[:60]:
+        try:
+            got = _download_batch([sym])
+            if sym in got:
+                with _STORE_LOCK:
+                    _STORE["data"][sym] = got[sym]
+                    _STORE["stamp"][sym] = time.time()
+        except Exception as e:
+            _STORE["last_err"] = f"{sym} {type(e).__name__}"
+        time.sleep(0.6)
+    with _STORE_LOCK:
+        _STORE["cycle_done"] = time.time()
+        _STORE["cycle_secs"] = round(time.time() - t0)
+        _STORE["running"] = False
+        _STORE["cycles"] += 1
+        # 清掉已不在股票池的舊資料
+        keep = set(UNIVERSE_SYMBOLS)
+        for sym in list(_STORE["data"].keys()):
+            if sym not in keep:
+                _STORE["data"].pop(sym, None)
+                _STORE["stamp"].pop(sym, None)
+
+
+def _refresher_loop():
+    # ① 若本機沒有名單檔，先上網抓一次成分股
+    if _UNI_META["source"].startswith(("內建", "上次")):
+        try:
+            rows, msg = fetch_universe_online()
+            if len(rows) >= 300:
+                _build_universe(rows, "維基百科即時抓取（標普500＋那斯達克100）")
+                _UNI_META["note"] = msg
+                try:
+                    _json.dump(rows, open(UNIVERSE_CACHE, "w", encoding="utf-8"), ensure_ascii=False)
+                except Exception:
+                    pass
+            else:
+                _UNI_META["note"] = f"成分股名單抓取不完整（{msg}），沿用 {_UNI_META['source']}"
+        except Exception as e:
+            _UNI_META["note"] = f"成分股名單抓取失敗：{type(e).__name__}"
+    # ② 持續更新日K
+    while True:
+        try:
+            _refresh_cycle()
+        except Exception as e:
+            with _STORE_LOCK:
+                _STORE["running"] = False
+                _STORE["last_err"] = f"{type(e).__name__}: {str(e)[:120]}"
+        sess = us_session_label()
+        time.sleep(600 if sess in ("盤中", "盤前") else 3600)
+
+
+_REFRESHER_STARTED = False
+
+
+@app.on_event("startup")
+def _start_refresher():
+    global _REFRESHER_STARTED
+    if _REFRESHER_STARTED:
+        return
+    _REFRESHER_STARTED = True
+    threading.Thread(target=_refresher_loop, daemon=True, name="universe-refresher").start()
+
+
+def universe_status():
+    with _STORE_LOCK:
+        loaded = len([s for s in UNIVERSE_SYMBOLS if s in _STORE["data"]])
+        done, secs = _STORE["cycle_done"], _STORE["cycle_secs"]
+        prog, total, running, err, cycles = (_STORE["progress"], _STORE["total"], _STORE["running"],
+                                             _STORE["last_err"], _STORE["cycles"])
+    age_min = round((time.time() - done) / 60) if done else None
+    return {
+        "total": len(UNIVERSE_SYMBOLS), "loaded": loaded,
+        "refreshing": running, "progress": prog, "progress_total": total,
+        "cycles": cycles, "cycle_secs": secs, "age_min": age_min,
+        "source": _UNI_META["source"], "note": _UNI_META["note"], "last_err": err,
+        "ready": loaded >= max(1, int(len(UNIVERSE_SYMBOLS) * 0.6)),
+    }
 
 
 def screen_one(df: pd.DataFrame, mode: str, neck_days: int, vol_ratio: float):
@@ -537,12 +791,36 @@ def get_indices():
     return out
 
 
+def _pool(sector: str):
+    uni = list(MARKET_UNIVERSE)
+    if sector == "ALL":
+        return uni
+    if sector == "WATCH":
+        return [x for x in uni if x.get("watch")]
+    return [x for x in uni if x["sector"] == sector]
+
+
+@app.get("/api/universe")
+def api_universe():
+    """股票池概況：各產業檔數＋背景更新進度（前端用來建選單與顯示載入狀態）。"""
+    uni = list(MARKET_UNIVERSE)
+    counts = {}
+    for x in uni:
+        counts[x["sector"]] = counts.get(x["sector"], 0) + 1
+    order = [k for k in SECTOR_ZH if k in counts]
+    return {
+        "sectors": [{"key": k, "label": SECTOR_ZH[k], "count": counts[k]} for k in order],
+        "watch_count": sum(1 for x in uni if x.get("watch")),
+        "status": universe_status(),
+    }
+
+
 @app.get("/api/screener")
 def run_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, vol_ratio: float = 1.2):
     mode = "SHORT" if mode == "SHORT" else "LONG"
     neck_days = max(5, min(60, int(neck_days)))
     vol_ratio = max(1.0, min(5.0, float(vol_ratio)))
-    pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
+    pool = _pool(sector)
 
     data = load_universe_daily()
     results, failed = [], 0
@@ -568,6 +846,7 @@ def run_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, v
         "failed": failed,
         "partial_volume": session == "盤中",
         "session": session,
+        "universe": universe_status(),
     }
 
 
@@ -576,7 +855,7 @@ def get_week52(kind: str = "high", sector: str = "ALL", near: float = 3.0):
     """52 週新高 / 新低榜（只用真實日K計算；上市未滿一年者不納入並計數）。"""
     kind = "low" if kind == "low" else "high"
     near = max(0.5, min(10.0, float(near)))
-    pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
+    pool = _pool(sector)
     data = load_universe_daily()
     out, failed, insufficient = [], 0, 0
     for item in pool:
@@ -609,7 +888,8 @@ def get_week52(kind: str = "high", sector: str = "ALL", near: float = 3.0):
         out.sort(key=lambda x: (not x["close_new_low"], not x["new_low"], x["from_low_pct"]))
     session = us_session_label()
     return {"list": out, "scanned": len(pool) - failed - insufficient, "failed": failed,
-            "insufficient": insufficient, "partial": session == "盤中", "session": session}
+            "insufficient": insufficient, "partial": session == "盤中", "session": session,
+            "universe": universe_status()}
 
 
 @app.get("/api/debug/{symbol}")
@@ -1004,7 +1284,7 @@ HTML_CONTENT = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>美股多空雷達戰情室 V10.0</title>
+<title>美股多空雷達戰情室 V10.1</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
@@ -1034,7 +1314,7 @@ select,input{color:var(--text-main);}
 <header class="bg-card border-b border-theme px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
   <div class="flex justify-between items-center flex-wrap gap-2">
     <div class="flex items-center flex-wrap gap-2">
-      <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider">⚡ 美股多空雷達 V10.0</span>
+      <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider">⚡ 美股多空雷達 V10.1</span>
       <span class="text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">真實數據版</span>
       <span id="sessionTag" class="text-xs px-2 py-0.5 rounded-full border border-theme font-bold text-muted">--</span>
       <button onclick="toggleSettingsDrawer()" class="text-xs bg-card px-2.5 py-0.5 rounded border border-theme font-bold">⚙️ 設定</button>
@@ -1092,12 +1372,8 @@ select,input{color:var(--text-main);}
       <div>
         <label class="text-xs text-muted font-bold block mb-1">🏛️ 市場板塊：</label>
         <select id="sectorSelect" onchange="onSectorChange()" class="w-full bg-input border border-theme rounded px-2.5 py-1.5 text-sm text-[#38bdf8] font-bold">
-          <option value="ALL">🌐 全市場精選大池</option>
-          <option value="SOX">⚡ 費城半導體 (SOX)</option>
-          <option value="NASDAQ">💻 那斯達克 100</option>
-          <option value="DOW">🏛️ 道瓊工業 30</option>
-          <option value="NYSE">💼 紐約證交所主力</option>
-          <option value="ETF">📊 主力 ETF</option>
+          <option value="ALL">🌐 全部（載入中…）</option>
+          <option value="WATCH">⭐ 我的觀察名單</option>
         </select>
       </div>
       <div class="flex gap-2">
@@ -1249,7 +1525,16 @@ select,input{color:var(--text-main);}
       <button onclick="closeChangeLogModal()" class="text-muted text-base">✕</button>
     </div>
     <div class="space-y-3 text-sm max-h-[420px] overflow-y-auto pr-2 text-muted">
-      <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
+      <div class="border-l-2 border-slate-600 pl-3 py-1">
+        <div class="font-bold text-base" style="color:var(--text-main)">V10.1 擴大股票池 (2026-10-18)</div>
+        <ul class="list-disc list-inside mt-1 space-y-0.5">
+          <li>掃描範圍由 43 檔擴大到標普500＋那斯達克100（約 500 檔），原 43 檔保留為「我的觀察名單」。</li>
+          <li>板塊選單改為 11 大 GICS 產業＋ETF；每檔標示所屬產業，並顯示各產業檔數。</li>
+          <li>日K改由背景程式分批下載並存放（每 10 分鐘盤中／1 小時盤後），請求時直接讀取，不再於點選當下才抓而逾時。</li>
+          <li>啟動初期資料尚在載入時會明確顯示進度，而不是顯示不完整的結果。</li>
+        </ul>
+      </div>
+      <div class="border-l-2 border-slate-600 pl-3 py-1">
         <div class="font-bold text-base" style="color:var(--text-main)">V10.0 真實數據版 (2026-10-18)</div>
         <ul class="list-disc list-inside mt-1 space-y-0.5">
           <li>修正圖表載入失敗(HTTP 500)：快取判斷誤用 DataFrame 真值，已修。</li>
@@ -1358,6 +1643,35 @@ function setRadarMode(mode) {
 function onParamChange() { loadScreenerList(); fetchStockData(currentSymbol); }
 function onSectorChange() { currentSector = document.getElementById('sectorSelect').value; loadScreenerList(); }
 
+let sectorLabels = {};
+let uniRetry = null;
+function sectorTag(k) { return (sectorLabels[k] || k || '').replace(/^\S+\s/, ''); }
+function uniText(u) {
+  if (!u) return '';
+  let t = `股票池 ${u.total} 檔（${u.source}）`;
+  if (u.age_min != null) t += `｜資料更新於 ${u.age_min < 1 ? '剛剛' : u.age_min + ' 分鐘前'}`;
+  if (u.refreshing) t += `｜更新中 ${u.progress}/${u.progress_total}`;
+  if (u.note) t += `｜${u.note}`;
+  return t;
+}
+async function loadUniverseMeta() {
+  try {
+    const d = await api('/api/universe');
+    sectorLabels = {};
+    const sel = document.getElementById('sectorSelect');
+    const keep = sel.value || 'ALL';
+    let html = `<option value="ALL">🌐 全部（${d.status.total} 檔）</option><option value="WATCH">⭐ 我的觀察名單（${d.watch_count} 檔）</option>`;
+    d.sectors.forEach(s => { sectorLabels[s.key] = s.label; html += `<option value="${esc(s.key)}">${esc(s.label)}（${s.count}）</option>`; });
+    sel.innerHTML = html;
+    sel.value = [...sel.options].some(o => o.value === keep) ? keep : 'ALL';
+    currentSector = sel.value;
+  } catch (e) { /* 選單維持預設 */ }
+}
+function scheduleUniRetry(u) {
+  if (uniRetry) { clearTimeout(uniRetry); uniRetry = null; }
+  if (u && !u.ready) uniRetry = setTimeout(() => { loadUniverseMeta().then(loadScreenerList); }, 8000);
+}
+
 async function fetchIndicesData() {
   try {
     const data = await api('/api/market/indices');
@@ -1385,10 +1699,13 @@ async function loadWeek52List() {
   const data = await api(`/api/week52?kind=${listTab}&sector=${currentSector}`);
   universeData = data.list;
   let t = `已掃描 ${data.scanned} 檔`;
+  if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，8 秒後自動更新｜` + t;
   if (data.failed) t += `，${data.failed} 檔取不到資料`;
   if (data.insufficient) t += `，${data.insufficient} 檔上市未滿一年(不納入)`;
   if (data.partial) t += '｜盤中：以當下最新價計算，收盤後才是定案';
+  if (data.universe) t += '｜' + uniText(data.universe);
   note.textContent = t;
+  scheduleUniRetry(data.universe);
   const box = document.getElementById('watchlist');
   box.innerHTML = '';
   if (!universeData.length) {
@@ -1403,7 +1720,7 @@ async function loadWeek52List() {
     div.className = 'px-3 py-2 rounded-lg bg-input hover:opacity-80 transition border border-theme cursor-pointer';
     div.innerHTML = `
       <div class="font-bold text-sm flex justify-between">
-        <span>${esc(item.symbol)} <span class="text-xs text-amber-500">[${esc(item.sector)}]</span></span>
+        <span>${esc(item.symbol)} <span class="text-xs text-amber-500">[${esc(sectorTag(item.sector))}]</span></span>
         <span class="text-xs ${hi ? 'text-sky-400 border-sky-500/30' : 'text-amber-500 border-amber-500/30'} bg-card px-1.5 py-0.5 rounded border">${badge}</span>
       </div>
       <div class="text-xs text-muted flex justify-between mt-0.5">
@@ -1428,9 +1745,12 @@ async function loadScreenerList() {
     const data = await api(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}&neck_days=${neckDays()}&vol_ratio=${volRatio()}`);
     universeData = data.screener_list;
     let t = `已掃描 ${data.scanned} 檔`;
+    if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，8 秒後自動更新｜` + t;
     if (data.failed) t += `，${data.failed} 檔取不到資料`;
     if (data.partial_volume) t += '｜盤中成交量尚未累積完整，量比會偏低';
+    if (data.universe) t += '｜' + uniText(data.universe);
     note.textContent = t;
+    scheduleUniRetry(data.universe);
     renderWatchlist();
   } catch (e) { note.textContent = ''; setStatus('篩選失敗：' + e.message, true); }
 }
@@ -1448,7 +1768,7 @@ function renderWatchlist() {
     div.className = 'px-3 py-2 rounded-lg bg-input hover:opacity-80 transition border border-theme cursor-pointer';
     div.innerHTML = `
       <div class="font-bold text-sm flex justify-between">
-        <span>${esc(item.symbol)} <span class="text-xs text-amber-500">[${esc(item.sector)}]</span></span>
+        <span>${esc(item.symbol)} <span class="text-xs text-amber-500">[${esc(sectorTag(item.sector))}]</span></span>
         <span class="text-xs text-emerald-500 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${esc(item.score)}${item.first_day ? '·首日' : ''}</span>
       </div>
       <div class="text-xs text-muted flex justify-between mt-0.5">
@@ -1897,7 +2217,7 @@ window.onload = () => {
   } catch (e) { setFontSize('large'); }
   if (isTouch) document.getElementById('touchHint').classList.remove('hidden');
   fetchIndicesData();
-  loadScreenerList();
+  loadUniverseMeta().then(loadScreenerList);
   fetchStockData(currentSymbol);
 };
 </script>
