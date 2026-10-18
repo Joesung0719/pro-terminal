@@ -625,6 +625,20 @@ def debug_symbol(symbol: str):
         out["options"] = {"ok": len(exps) > 0, "count": len(exps), "first": exps[:3]}
     except Exception as e:
         out["options"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    # 原始請求探測：看 Yahoo / Cboe 的期權端點實際回什麼（狀態碼與開頭文字，不做任何加工）
+    probes = {
+        "yahoo_options_query2": f"https://query2.finance.yahoo.com/v7/finance/options/{sym}",
+        "yahoo_options_query1": f"https://query1.finance.yahoo.com/v7/finance/options/{sym}",
+        "cboe_delayed_options": f"https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json",
+    }
+    raw = {}
+    for name, url in probes.items():
+        try:
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            raw[name] = {"status": r.status_code, "bytes": len(r.content), "head": r.text[:160].replace("\n", " ")}
+        except Exception as e:
+            raw[name] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    out["raw_probe"] = raw
     out["recent_cache_errors"] = {str(k): v for k, v in list(_LAST_ERR.items())[-10:]}
     return out
 
