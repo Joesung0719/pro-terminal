@@ -5,7 +5,6 @@ import time
 import hmac
 import threading
 import datetime
-import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -21,14 +20,15 @@ try:
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
     TPE = ZoneInfo("Asia/Taipei")
-except Exception:
+except Exception:  # 需要在 requirements.txt 加入 tzdata
     ET = None
     TPE = None
 
-APP_VERSION = "V9.9"
+APP_VERSION = "V10.0"
 
 app = FastAPI(title=f"US Professional Radar War Room - {APP_VERSION}")
 
+# 修正：allow_origins="*" 時不可同時 allow_credentials=True（瀏覽器會拒絕，也有安全疑慮）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,14 +43,17 @@ ADMIN_PUSH_PIN = os.environ.get("ADMIN_PUSH_PIN", "").strip()
 
 
 # ==============================================================================
-# 工具：快取、時區、輸入驗證、JSON 安全數值清洗
+# 工具：快取、時區、輸入驗證
 # ==============================================================================
 _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 
 
+_LAST_ERR = {}
+
+
 def _is_valid_cache_val(val) -> bool:
-    """安全判斷快取結果是否非空（修正 Pandas DataFrame 無法直接 bool(df) 的致命 500 Bug）"""
+    """DataFrame 不能直接 bool()；這是早上圖表 HTTP 500 的根本原因。"""
     if val is None:
         return False
     if isinstance(val, (pd.DataFrame, pd.Series)):
@@ -61,6 +64,7 @@ def _is_valid_cache_val(val) -> bool:
 
 
 def cached(key, ttl, fn, cache_empty=False):
+    """TTL 快取。例外不再被悄悄吞掉：原因記錄在 _LAST_ERR，可由 /api/debug 查看。"""
     now = time.time()
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
@@ -68,8 +72,10 @@ def cached(key, ttl, fn, cache_empty=False):
             return hit[1]
     try:
         val = fn()
-    except Exception:
-        val = None
+        _LAST_ERR.pop(key, None)
+    except Exception as e:
+        _LAST_ERR[key] = f"{type(e).__name__}: {str(e)[:200]}"
+        return None
     if cache_empty or _is_valid_cache_val(val):
         with _CACHE_LOCK:
             _CACHE[key] = (now, val)
@@ -116,7 +122,7 @@ def us_session_label() -> str:
     return "休市"
 
 
-SYMBOL_RE = re.compile(r"^[A-Z0-9\^][A-Z0-9.\-]{0,9}$")
+SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
 
 
 def clean_symbol(s: str) -> str:
@@ -143,6 +149,7 @@ def _f(x, default=0.0):
 
 
 def _safe_round(x, nd=2, default=None):
+    """取不到就回傳 default(預設 None)，絕不拿別的數字頂替。"""
     try:
         if x is None:
             return default
@@ -161,7 +168,7 @@ def _safe_round(x, nd=2, default=None):
 
 
 # ==============================================================================
-# Black-Scholes Greeks
+# Black-Scholes Greeks（移除 scipy 依賴，以 math.erf 取代，部署更輕）
 # ==============================================================================
 def _ncdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -174,24 +181,35 @@ def _npdf(x: float) -> float:
 def calculate_greeks(S, K, T, r, sigma, option_type="put"):
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return {"delta": 0.0, "theta": 0.0, "gamma": 0.0, "vega": 0.0}
-    try:
-        sq = sigma * math.sqrt(T)
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / sq
-        d2 = d1 - sq
-        if option_type == "call":
-            delta = _ncdf(d1)
-            theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * _ncdf(d2)) / 365
-        else:
-            delta = _ncdf(d1) - 1
-            theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * _ncdf(-d2)) / 365
-        gamma = _npdf(d1) / (S * sq)
-        vega = S * _npdf(d1) * math.sqrt(T) / 100
-        return {
-            "delta": _f(round(delta, 4)), "theta": _f(round(theta, 4)),
-            "gamma": _f(round(gamma, 4)), "vega": _f(round(vega, 4))
-        }
-    except Exception:
-        return {"delta": 0.0, "theta": 0.0, "gamma": 0.0, "vega": 0.0}
+    sq = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / sq
+    d2 = d1 - sq
+    if option_type == "call":
+        delta = _ncdf(d1)
+        theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * _ncdf(d2)) / 365
+    else:
+        delta = _ncdf(d1) - 1
+        theta = (-(S * _npdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * _ncdf(-d2)) / 365
+    gamma = _npdf(d1) / (S * sq)
+    vega = S * _npdf(d1) * math.sqrt(T) / 100
+    return {
+        "delta": round(delta, 4), "theta": round(theta, 4),
+        "gamma": round(gamma, 4), "vega": round(vega, 4)
+    }
+
+
+def risk_free_rate():
+    """無風險利率：優先用 Yahoo 的 13 週美國國庫券殖利率(^IRX)；取不到才用預設並明確標示。"""
+    def _load():
+        df = _normalize_df(yf.Ticker("^IRX").history(period="10d"))
+        if df.empty:
+            return None
+        return round(float(df["Close"].iloc[-1]) / 100.0, 4)
+
+    r = cached(("irx",), 6 * 3600, _load)
+    if r is not None and 0 <= r < 0.2:
+        return r, "13週美國國庫券殖利率(^IRX)"
+    return 0.045, "預設假設 4.5%（^IRX 取得失敗）"
 
 
 MARKET_UNIVERSE = [
@@ -244,9 +262,10 @@ UNIVERSE_BY_SYMBOL = {x["symbol"]: x for x in MARKET_UNIVERSE}
 
 
 # ==============================================================================
-# 歷史資料與指標
+# 歷史資料與指標（修正：均線一律要求滿期數才有值，不再 min_periods=1 偽造年線）
 # ==============================================================================
 HISTORY_PLAN = {
+    # interval: (抓取區間, 顯示根數)；抓得比顯示長，均線才有足夠暖機資料
     "1d": ("2y", 252),
     "1wk": ("10y", 156),
     "1mo": ("max", 120),
@@ -254,45 +273,45 @@ HISTORY_PLAN = {
 INTERVAL_UNIT = {"1d": "日", "1wk": "週", "1mo": "月"}
 
 
+def _strip_tz(df: pd.DataFrame) -> pd.DataFrame:
+    if getattr(df.index, "tz", None) is not None:
+        df = df.copy()
+        df.index = df.index.tz_localize(None)
+    return df
+
+
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """統一資料格式：攤平 MultiIndex 欄位、去除重複欄位、去時區、去除無收盤價的列。"""
     if df is None or df.empty:
         return pd.DataFrame()
     d = df.copy()
     if isinstance(d.columns, pd.MultiIndex):
         d.columns = d.columns.get_level_values(0)
-    # 防止重複欄位名稱導致 d["Close"] 變成 DataFrame
     d = d.loc[:, ~d.columns.duplicated()]
     if getattr(d.index, "tz", None) is not None:
         d.index = d.index.tz_localize(None)
     if "Close" not in d.columns:
         return pd.DataFrame()
-    d = d.dropna(subset=["Close"])
-    return d
+    return d.dropna(subset=["Close"])
 
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
-    c = pd.to_numeric(d["Close"], errors="coerce")
-    h = pd.to_numeric(d["High"], errors="coerce")
-    lo = pd.to_numeric(d["Low"], errors="coerce")
-    vol = pd.to_numeric(d["Volume"], errors="coerce").fillna(0.0)
-
+    c = d["Close"]
     for p in (5, 10, 20, 60, 120, 240):
-        d[f"MA{p}"] = c.rolling(p, min_periods=1).mean()
-    std20 = c.rolling(20, min_periods=5).std(ddof=0).fillna(0.0)
+        d[f"MA{p}"] = c.rolling(p, min_periods=p).mean()
+    std20 = c.rolling(20, min_periods=20).std(ddof=0)
     d["BB_UP"] = d["MA20"] + 2.0 * std20
     d["BB_LOW"] = d["MA20"] - 2.0 * std20
-    d["Vol_MA5"] = vol.shift(1).rolling(5, min_periods=1).mean()
+    d["Vol_MA5"] = d["Volume"].shift(1).rolling(5, min_periods=3).mean()
 
-    low9 = lo.rolling(9, min_periods=1).min()
-    high9 = h.rolling(9, min_periods=1).max()
-    denom = (high9 - low9).replace(0, np.nan)
-    rsv = ((c - low9) / denom * 100.0).replace([np.inf, -np.inf], np.nan).fillna(50.0)
+    low9 = d["Low"].rolling(9, min_periods=9).min()
+    high9 = d["High"].rolling(9, min_periods=9).max()
+    rsv = ((c - low9) / (high9 - low9).replace(0, np.nan) * 100.0).fillna(50.0)
     k_vals, d_vals = [], []
     k_prev, d_prev = 50.0, 50.0
     for val in rsv.values:
-        v_clean = _f(val, 50.0)
-        k_cur = (2.0 / 3.0) * k_prev + (1.0 / 3.0) * v_clean
+        k_cur = (2.0 / 3.0) * k_prev + (1.0 / 3.0) * float(val)
         d_cur = (2.0 / 3.0) * d_prev + (1.0 / 3.0) * k_cur
         k_vals.append(k_cur)
         d_vals.append(d_cur)
@@ -312,34 +331,41 @@ def fetch_history(symbol: str, interval: str) -> pd.DataFrame:
     period, _ = HISTORY_PLAN.get(interval, ("2y", 252))
 
     def _load():
-        df = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=False)
-        df = _normalize_df(df)
-        return df if not df.empty else None
+        last = None
+        for _ in range(2):
+            try:
+                df = _normalize_df(yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=False))
+                if not df.empty:
+                    return df
+            except Exception as e:
+                last = e
+                time.sleep(0.8)
+        if last:
+            raise last
+        return None
 
     return cached(("hist", symbol, interval), 120, _load)
 
 
 def calc_neckline(df: pd.DataFrame, neck_days: int, mode: str):
-    if df is None or len(df) < 3:
+    """N 根 K 棒頸線：多方=前N根最高、空方=前N根最低（不含當根）。"""
+    if len(df) < neck_days + 2:
         return None
-    win = df.iloc[-(neck_days + 1):-1] if len(df) > neck_days + 1 else df.iloc[:-1]
-    if win.empty:
-        return None
-    val = win["High"].max() if mode == "LONG" else win["Low"].min()
-    return _safe_round(val, 2, None)
+    win = df.iloc[-(neck_days + 1):-1]
+    return float(win["High"].max()) if mode == "LONG" else float(win["Low"].min())
 
 
 def quality_badge(mode: str, spot: float, neck: float, ma20) -> tuple:
-    if neck is None or neck <= 0 or spot <= 0:
+    if neck is None or neck <= 0:
         return "資料不足", 0.0
     if mode == "LONG":
-        dist = _f((spot / neck - 1.0) * 100.0, 0.0)
+        dist = (spot / neck - 1.0) * 100.0
         if dist <= 0:
             return "⏳ 尚未突破頸線", dist
         if dist <= 5.0 and ma20 is not None and spot >= ma20:
             return "🛡️ 距頸線 ≤ 5% 且站上月線", dist
         return "⚠️ 乖離偏遠或月線下", dist
-    dist = _f((neck / spot - 1.0) * 100.0, 0.0)
+    dist = (neck / spot - 1.0) * 100.0
     if dist <= 0:
         return "⏳ 尚未跌破頸線", dist
     if dist <= 5.0 and ma20 is not None and spot <= ma20:
@@ -347,15 +373,37 @@ def quality_badge(mode: str, spot: float, neck: float, ma20) -> tuple:
     return "⚠️ 跌幅已遠或仍在月線上", dist
 
 
+def week52_stats(df_daily):
+    """52 週高低：取最近 252 根日K 的『最高價 / 最低價』(與 Yahoo 52週區間定義一致)。
+    少於 240 根(上市未滿一年)一律回傳 None，不用不足一年的資料充數。"""
+    if df_daily is None or len(df_daily) < 240:
+        return None
+    w = df_daily.tail(252)
+    prior = w.iloc[:-1]
+    hi, lo = float(w["High"].max()), float(w["Low"].min())
+    last_c, last_h, last_l = float(w["Close"].iloc[-1]), float(w["High"].iloc[-1]), float(w["Low"].iloc[-1])
+    prior_hi, prior_lo = float(prior["High"].max()), float(prior["Low"].min())
+    rng = hi - lo
+    return {
+        "high": round(hi, 2), "high_date": w["High"].idxmax().strftime("%Y-%m-%d"),
+        "low": round(lo, 2), "low_date": w["Low"].idxmin().strftime("%Y-%m-%d"),
+        "from_high_pct": round((last_c / hi - 1) * 100, 1),
+        "from_low_pct": round((last_c / lo - 1) * 100, 1),
+        "position_pct": round((last_c - lo) / rng * 100, 0) if rng > 0 else None,
+        "new_high": bool(last_h >= prior_hi),            # 盤中曾創 52 週新高
+        "close_new_high": bool(last_c >= prior_hi),      # 收盤價站上前 52 週最高（較強）
+        "new_low": bool(last_l <= prior_lo),
+        "close_new_low": bool(last_c <= prior_lo),
+        "bars": len(w),
+    }
+
+
 def _series(s: pd.Series, nd=2):
-    out = []
-    for v in s.values:
-        out.append(_safe_round(v, nd, None))
-    return out
+    return [None if pd.isna(v) else round(float(v), nd) for v in s.values]
 
 
 # ==============================================================================
-# 全市場日K批次下載
+# 全市場日K批次下載（一次抓完 42 檔，快取 5 分鐘；取代原本逐檔循序抓取）
 # ==============================================================================
 def _split_download(raw, symbols):
     out = {}
@@ -386,68 +434,59 @@ def _split_download(raw, symbols):
 
 
 def load_universe_daily():
+    """全股票池 1 年日K（52 週高低需要完整一年）。取到不足 60% 就重試一次。"""
     def _load():
         data = {}
-        try:
+        for attempt in range(2):
             raw = yf.download(
-                " ".join(UNIVERSE_SYMBOLS), period="6mo", group_by="ticker",
+                " ".join(UNIVERSE_SYMBOLS), period="1y", group_by="ticker",
                 threads=True, progress=False, auto_adjust=False
             )
             data = _split_download(raw, UNIVERSE_SYMBOLS)
-        except Exception:
-            data = {}
+            if len(data) >= len(UNIVERSE_SYMBOLS) * 0.6:
+                break
+            time.sleep(1.5)
         return data
 
     return cached(("universe_daily",), 300, _load) or {}
 
 
 def screen_one(df: pd.DataFrame, mode: str, neck_days: int, vol_ratio: float):
-    try:
-        if df is None or len(df) < max(neck_days + 3, 22):
-            return None
-        c = _f(df["Close"].iloc[-1], 0.0)
-        o = _f(df["Open"].iloc[-1], 0.0)
-        prev_c = _f(df["Close"].iloc[-2], 0.0)
-        v = _f(df["Volume"].iloc[-1], 0.0)
-        if c <= 0 or prev_c <= 0:
-            return None
-        ma20 = df["Close"].rolling(20, min_periods=10).mean().iloc[-1]
-        vma5 = df["Volume"].shift(1).rolling(5, min_periods=3).mean().iloc[-1]
-        if pd.isna(ma20) or pd.isna(vma5) or vma5 <= 0:
-            return None
-        ratio = _f(v / float(vma5), 0.0)
-        win = df.iloc[-(neck_days + 1):-1]
-        prev_win = df.iloc[-(neck_days + 2):-2]
-        if win.empty or prev_win.empty:
-            return None
-        if mode == "LONG":
-            neck = _f(win["High"].max(), 0.0)
-            prev_neck = _f(prev_win["High"].max(), 0.0)
-            if neck <= 0:
-                return None
-            ok = c > neck and c > o and c > float(ma20) and ratio >= vol_ratio
-            dist = _f((c / neck - 1.0) * 100.0, 0.0)
-            first_day = prev_c <= prev_neck
-        else:
-            neck = _f(win["Low"].min(), 0.0)
-            prev_neck = _f(prev_win["Low"].min(), 0.0)
-            if neck <= 0:
-                return None
-            ok = c < neck and c < o and c < float(ma20) and ratio >= vol_ratio
-            dist = _f((neck / c - 1.0) * 100.0, 0.0)
-            first_day = prev_c >= prev_neck
-        if not ok:
-            return None
-        return {
-            "price": round(c, 2),
-            "pct": round(_f((c / prev_c - 1.0) * 100.0, 0.0), 2),
-            "dist_neck_pct": round(dist, 1),
-            "v_ratio": round(ratio, 1),
-            "first_day": bool(first_day),
-            "last_date": df.index[-1].strftime("%Y-%m-%d"),
-        }
-    except Exception:
+    if df is None or len(df) < max(neck_days + 6, 25):
         return None
+    c = float(df["Close"].iloc[-1])
+    o = float(df["Open"].iloc[-1])
+    prev_c = float(df["Close"].iloc[-2])
+    v = float(df["Volume"].iloc[-1])
+    ma20 = df["Close"].rolling(20, min_periods=20).mean().iloc[-1]
+    vma5 = df["Volume"].shift(1).rolling(5, min_periods=3).mean().iloc[-1]
+    if pd.isna(ma20) or pd.isna(vma5) or vma5 <= 0:
+        return None
+    ratio = v / float(vma5)
+    win = df.iloc[-(neck_days + 1):-1]
+    prev_win = df.iloc[-(neck_days + 2):-2]
+    if mode == "LONG":
+        neck = float(win["High"].max())
+        prev_neck = float(prev_win["High"].max())
+        ok = c > neck and c > o and c > float(ma20) and ratio >= vol_ratio
+        dist = (c / neck - 1.0) * 100.0
+        first_day = prev_c <= prev_neck
+    else:
+        neck = float(win["Low"].min())
+        prev_neck = float(prev_win["Low"].min())
+        ok = c < neck and c < o and c < float(ma20) and ratio >= vol_ratio
+        dist = (neck / c - 1.0) * 100.0
+        first_day = prev_c >= prev_neck
+    if not ok:
+        return None
+    return {
+        "price": round(c, 2),
+        "pct": round((c / prev_c - 1.0) * 100.0, 2),
+        "dist_neck_pct": round(dist, 1),
+        "v_ratio": round(ratio, 1),
+        "first_day": bool(first_day),
+        "last_date": df.index[-1].strftime("%Y-%m-%d"),
+    }
 
 
 @app.get("/healthz")
@@ -464,15 +503,20 @@ def get_indices():
             k, sym = item
             try:
                 df = yf.Ticker(sym).history(period="7d")
-                df = _normalize_df(df)
-                if len(df) < 2:
-                    return k, None
-                c = _f(df["Close"].iloc[-1])
-                prev_c = _f(df["Close"].iloc[-2], c)
+                df = df.dropna(subset=["Close"])
+                c = float(df["Close"].iloc[-1])
+                prev_c = float(df["Close"].iloc[-2])
                 chg = round(c - prev_c, 2)
-                pct = round(chg / prev_c * 100.0, 2) if prev_c > 0 else 0.0
+                pct = round(chg / prev_c * 100.0, 2)
                 if k == "vix":
-                    status = "極度恐慌" if c >= 30 else ("恐慌警戒" if c >= 20 else ("正常平穩" if c >= 15 else "樂觀偏低"))
+                    if c >= 30:
+                        status = "極度恐慌"
+                    elif c >= 20:
+                        status = "恐慌警戒"
+                    elif c >= 15:
+                        status = "正常平穩"
+                    else:
+                        status = "樂觀偏低"
                     return k, {"close": round(c, 2), "chg": chg, "pct": pct, "status": status}
                 return k, {"close": int(round(c)), "chg": chg, "pct": pct}
             except Exception:
@@ -502,9 +546,7 @@ def run_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, v
     results, failed = [], 0
     for item in pool:
         df = data.get(item["symbol"])
-        if df is None or df.empty:
-            df = fetch_history(item["symbol"], "1d")
-        if df is None or df.empty:
+        if df is None:
             failed += 1
             continue
         r = screen_one(df, mode, neck_days, vol_ratio)
@@ -525,6 +567,66 @@ def run_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, v
         "partial_volume": session == "盤中",
         "session": session,
     }
+
+
+@app.get("/api/week52")
+def get_week52(kind: str = "high", sector: str = "ALL", near: float = 3.0):
+    """52 週新高 / 新低榜（只用真實日K計算；上市未滿一年者不納入並計數）。"""
+    kind = "low" if kind == "low" else "high"
+    near = max(0.5, min(10.0, float(near)))
+    pool = MARKET_UNIVERSE if sector == "ALL" else [x for x in MARKET_UNIVERSE if x["sector"] == sector]
+    data = load_universe_daily()
+    out, failed, insufficient = [], 0, 0
+    for item in pool:
+        df = data.get(item["symbol"])
+        if df is None or df.empty:
+            failed += 1
+            continue
+        w = week52_stats(df)
+        if w is None:
+            insufficient += 1
+            continue
+        if kind == "high":
+            hit = w["new_high"] or w["from_high_pct"] >= -near
+        else:
+            hit = w["new_low"] or w["from_low_pct"] <= near
+        if not hit:
+            continue
+        prev_c = _f(df["Close"].iloc[-2], 0.0)
+        c = _f(df["Close"].iloc[-1], 0.0)
+        vma5 = df["Volume"].shift(1).rolling(5, min_periods=3).mean().iloc[-1]
+        ratio = _safe_round(_f(df["Volume"].iloc[-1]) / vma5, 1) if (not pd.isna(vma5) and vma5 > 0) else None
+        out.append({
+            "symbol": item["symbol"], "name": item["name"], "sector": item["sector"],
+            "price": round(c, 2), "pct": round((c / prev_c - 1) * 100, 2) if prev_c > 0 else None,
+            "v_ratio": ratio, **w,
+        })
+    if kind == "high":
+        out.sort(key=lambda x: (not x["close_new_high"], not x["new_high"], -x["from_high_pct"]))
+    else:
+        out.sort(key=lambda x: (not x["close_new_low"], not x["new_low"], x["from_low_pct"]))
+    session = us_session_label()
+    return {"list": out, "scanned": len(pool) - failed - insufficient, "failed": failed,
+            "insufficient": insufficient, "partial": session == "盤中", "session": session}
+
+
+@app.get("/api/debug/{symbol}")
+def debug_symbol(symbol: str):
+    """診斷：直接對 Yahoo 做一次請求並回報真實錯誤，用來查「無期權合約」這類問題。"""
+    sym = clean_symbol(symbol)
+    out = {"yfinance": getattr(yf, "__version__", "?"), "symbol": sym, "time_et": et_now().strftime("%Y-%m-%d %H:%M")}
+    try:
+        df = _normalize_df(yf.Ticker(sym).history(period="5d"))
+        out["history"] = {"ok": not df.empty, "rows": len(df), "last": df.index[-1].strftime("%Y-%m-%d") if not df.empty else None}
+    except Exception as e:
+        out["history"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    try:
+        exps = list(yf.Ticker(sym).options or [])
+        out["options"] = {"ok": len(exps) > 0, "count": len(exps), "first": exps[:3]}
+    except Exception as e:
+        out["options"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    out["recent_cache_errors"] = {str(k): v for k, v in list(_LAST_ERR.items())[-10:]}
+    return out
 
 
 def _name_for(symbol: str):
@@ -553,25 +655,25 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
         neck_days = max(5, min(60, int(neck_days)))
 
         raw = fetch_history(sym, interval)
-        # 若單檔抓取偶發空值，且為日K，自動從全市場批次快取備援讀取
         if (raw is None or len(raw) < 3) and interval == "1d":
-            uni_data = load_universe_daily()
-            raw = uni_data.get(sym)
-
+            raw = load_universe_daily().get(sym)
         if raw is None or len(raw) < 3:
-            raise HTTPException(status_code=404, detail=f"查無 {sym} 資料或 Yahoo 暫時無回應")
+            why = _LAST_ERR.get(("hist", sym, interval))
+            raise HTTPException(status_code=404, detail=f"查無 {sym} 資料或 Yahoo 暫時無回應" + (f"（{why}）" if why else ""))
 
         df = add_indicators(raw)
-        spot = _f(round(_f(df["Close"].iloc[-1]), 2), 0.0)
-        prev_spot = _f(round(_f(df["Close"].iloc[-2], spot), 2), spot)
-        chg = _f(round(spot - prev_spot, 2), 0.0)
-        pct = _f(round(chg / prev_spot * 100.0, 2), 0.0) if prev_spot > 0 else 0.0
-
-        ma20_val = _safe_round(df["MA20"].iloc[-1], 2, spot)
-        ma240_val = _safe_round(df["MA240"].iloc[-1], 2, spot)
+        spot = _f(df["Close"].iloc[-1], 0.0)
+        prev_spot = _f(df["Close"].iloc[-2], 0.0)
+        chg = round(spot - prev_spot, 2) if prev_spot > 0 else 0.0
+        pct = round(chg / prev_spot * 100.0, 2) if prev_spot > 0 else 0.0
+        ma20_val = _safe_round(df["MA20"].iloc[-1], 2, None)       # 取不到就是 None，不拿現價頂替
+        ma240_val = _safe_round(df["MA240"].iloc[-1], 2, None)
 
         neck = calc_neckline(df, neck_days, mode)
         badge, dist = quality_badge(mode, spot, neck, ma20_val)
+
+        daily = raw if interval == "1d" else fetch_history(sym, "1d")
+        w52 = week52_stats(daily)
 
         _, show_n = HISTORY_PLAN[interval]
         v = df.tail(show_n)
@@ -580,14 +682,12 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
         return {
             "symbol": sym, "name": str(name_str), "exchange": str(exchange_str),
             "interval": interval, "mode": mode,
-            "spot": spot, "chg": chg, "pct": pct,
+            "spot": round(spot, 2), "chg": chg, "pct": pct,
             "last_date": v.index[-1].strftime("%Y-%m-%d"),
-            "ma20_val": ma20_val if ma20_val is not None else spot,
-            "ma240_val": ma240_val,
-            "neckline": neck,
-            "neck_days": neck_days, "neck_unit": INTERVAL_UNIT[interval],
-            "dist_neck": _f(round(dist, 1), 0.0),
-            "quality_badge": badge,
+            "ma20_val": ma20_val, "ma240_val": ma240_val,
+            "neckline": neck, "neck_days": neck_days, "neck_unit": INTERVAL_UNIT[interval],
+            "dist_neck": round(dist, 1), "quality_badge": badge,
+            "week52": w52,
             "dates": [d.strftime("%Y-%m-%d") for d in v.index],
             "opens": _series(v["Open"]), "highs": _series(v["High"]),
             "lows": _series(v["Low"]), "closes": _series(v["Close"]),
@@ -602,11 +702,12 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"後端處理異常 ({type(e).__name__}): {str(e)}")
+        raise HTTPException(status_code=500, detail=f"後端處理異常 ({type(e).__name__}): {str(e)[:200]}")
 
 
 @app.get("/api/earnings/{symbol}")
 def get_next_earnings(symbol: str):
+    """下一個財報日：賣方策略（Short Put / Covered Call）最需要避開的事件風險。"""
     sym = clean_symbol(symbol)
 
     def _load():
@@ -630,18 +731,26 @@ def get_next_earnings(symbol: str):
         except Exception:
             return {"date": None}
 
-    return cached(("earn", sym), 6 * 3600, _load, cache_empty=True) or {"date": None}
+    return cached(("earn", sym), 6 * 3600, _load, cache_empty=True)
 
 
 # ==============================================================================
-# 選擇權
+# 選擇權：改為「先取到期日、選了再取該到期日合約」，不再一次抓全部到期日
 # ==============================================================================
 def _expirations(sym: str):
     def _load():
-        try:
-            return list(yf.Ticker(sym).options or [])
-        except Exception:
-            return []
+        last = None
+        for _ in range(2):
+            try:
+                exps = list(yf.Ticker(sym).options or [])
+                if exps:
+                    return exps
+            except Exception as e:
+                last = e
+                time.sleep(0.8)
+        if last:
+            raise last
+        return []
     return cached(("exps", sym), 600, _load) or []
 
 
@@ -650,7 +759,9 @@ def get_option_expirations(symbol: str):
     sym = clean_symbol(symbol)
     exps = _expirations(sym)
     if not exps:
-        return {"expirations": [], "error": "此標的無期權，或非交易時段暫無報價"}
+        why = _LAST_ERR.get(("exps", sym))
+        msg = ("Yahoo 取得到期日失敗：" + why) if why else "Yahoo 回傳的到期日清單是空的（此標的無期權，或 Yahoo 暫時不提供）"
+        return {"expirations": [], "error": msg + f"｜可開 /api/debug/{sym} 查看原因"}
     return {"expirations": exps}
 
 
@@ -669,10 +780,11 @@ def get_option_chain(symbol: str, exp: str, spot: float = 0.0):
                 k = _f(r.get("strike"))
                 if spot > 0 and not (spot * 0.5 <= k <= spot * 1.5):
                     continue
-                bid, ask, last = _f(r.get("bid")), _f(r.get("ask")), _f(r.get("lastPrice"))
+                iv = _f(r.get("impliedVolatility"), 0.0)
                 rows.append({
-                    "strike": k, "bid": bid, "ask": ask, "last": last,
-                    "impliedVolatility": _f(r.get("impliedVolatility"), 0.35),
+                    "strike": k, "bid": _f(r.get("bid")), "ask": _f(r.get("ask")), "last": _f(r.get("lastPrice")),
+                    # Yahoo 沒有有效報價時 IV 會是極小值；此時回傳 None，不填 35% 之類的猜測值
+                    "impliedVolatility": iv if iv > 0.01 else None,
                     "volume": int(_f(r.get("volume"))), "openInterest": int(_f(r.get("openInterest"))),
                 })
             return rows
@@ -681,20 +793,24 @@ def get_option_chain(symbol: str, exp: str, spot: float = 0.0):
 
     data = cached(("chain", sym, exp, round(_f(spot), 0)), 120, _load)
     if not data or (not data["puts"] and not data["calls"]):
-        raise HTTPException(status_code=502, detail="取得期權鏈失敗，請稍後重試")
+        why = _LAST_ERR.get(("chain", sym, exp, round(_f(spot), 0)))
+        raise HTTPException(status_code=502, detail="取得期權鏈失敗" + (f"：{why}" if why else "，請稍後重試"))
     return data
 
 
 @app.get("/api/greeks")
 def get_greeks(S: float, K: float, T: float, sigma: float, type: str = "put"):
-    S_c, K_c, T_c, sig_c = _f(S), _f(K), _f(T), _f(sigma, 0.35)
-    if S_c <= 0 or K_c <= 0 or T_c <= 0:
-        return {"delta": 0.0, "theta": 0.0, "gamma": 0.0, "vega": 0.0}
-    return calculate_greeks(S_c, K_c, T_c, 0.045, sig_c, "call" if type == "call" else "put")
+    S_c, K_c, T_c, sig_c = _f(S), _f(K), _f(T), _f(sigma)
+    if S_c <= 0 or K_c <= 0 or T_c <= 0 or sig_c <= 0:
+        raise HTTPException(status_code=400, detail="參數不完整，無法計算 Greeks")
+    r, r_src = risk_free_rate()
+    g = calculate_greeks(S_c, K_c, T_c, r, sig_c, "call" if type == "call" else "put")
+    g["r"], g["r_source"] = r, r_src
+    return g
 
 
 # ==============================================================================
-# LINE 推播
+# LINE 推播：加入 PIN 驗證與冷卻；回傳真實 LINE 狀態
 # ==============================================================================
 STRATEGY_NAMES = {
     "csp": "Short Put (低接收租)", "cc": "Covered Call (現股包租公)",
@@ -706,7 +822,7 @@ _PUSH_STATE = {"last": 0.0, "fails": 0, "lock_until": 0.0}
 
 
 class PushPayload(BaseModel):
-    symbol: str = Field(default="PLTR", max_length=12)
+    symbol: str = Field(default="SPY", max_length=12)
     strategy: str = Field(default="csp", max_length=20)
     mode: str = Field(default="LONG", max_length=5)
     neck_days: int = Field(default=20, ge=5, le=60)
@@ -715,44 +831,60 @@ class PushPayload(BaseModel):
 
 @app.post("/api/line/push")
 def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
+    if not ADMIN_PUSH_PIN:
+        raise HTTPException(status_code=403, detail="伺服器尚未設定 ADMIN_PUSH_PIN，推播功能已停用（避免任何人都能觸發你的 LINE）")
     now = time.time()
     with _PUSH_LOCK:
-        if ADMIN_PUSH_PIN:
-            if now < _PUSH_STATE["lock_until"]:
-                raise HTTPException(status_code=429, detail=f"錯誤次數過多，請 {int(_PUSH_STATE['lock_until'] - now)} 秒後再試")
-            if not hmac.compare_digest(x_push_pin.encode("utf-8"), ADMIN_PUSH_PIN.encode("utf-8")):
-                _PUSH_STATE["fails"] += 1
-                if _PUSH_STATE["fails"] >= 5:
-                    _PUSH_STATE["lock_until"] = now + 300
-                    _PUSH_STATE["fails"] = 0
-                raise HTTPException(status_code=401, detail="通行碼錯誤")
-            _PUSH_STATE["fails"] = 0
+        if now < _PUSH_STATE["lock_until"]:
+            raise HTTPException(status_code=429, detail=f"錯誤次數過多，請 {int(_PUSH_STATE['lock_until'] - now)} 秒後再試")
+        if not hmac.compare_digest(x_push_pin.encode("utf-8"), ADMIN_PUSH_PIN.encode("utf-8")):
+            _PUSH_STATE["fails"] += 1
+            if _PUSH_STATE["fails"] >= 5:
+                _PUSH_STATE["lock_until"] = now + 300
+                _PUSH_STATE["fails"] = 0
+            raise HTTPException(status_code=401, detail="通行碼錯誤")
+        _PUSH_STATE["fails"] = 0
+        if now - _PUSH_STATE["last"] < 30:
+            raise HTTPException(status_code=429, detail="請等待 30 秒後再推播")
+        _PUSH_STATE["last"] = now
 
     sym = clean_symbol(payload.symbol)
     mode = "SHORT" if payload.mode == "SHORT" else "LONG"
     raw = fetch_history(sym, "1d")
     if raw is None or len(raw) < 5:
-        uni_data = load_universe_daily()
-        raw = uni_data.get(sym)
+        raw = load_universe_daily().get(sym)
     if raw is None or len(raw) < 5:
         raise HTTPException(status_code=502, detail="取得行情失敗，未推播")
     df = add_indicators(raw)
     spot = _f(df["Close"].iloc[-1])
-    prev = _f(df["Close"].iloc[-2], spot)
-    pct = _f((spot / prev - 1.0) * 100.0) if prev > 0 else 0.0
-    ma20 = _f(df["MA20"].iloc[-1], spot)
-    neck = calc_neckline(df, payload.neck_days, mode) or spot
+    prev = _f(df["Close"].iloc[-2])
+    pct = _f((spot / prev - 1.0) * 100.0) if prev > 0 else None
+    ma20 = _safe_round(df["MA20"].iloc[-1], 2, None)
+    neck = calc_neckline(df, payload.neck_days, mode)
     badge, dist = quality_badge(mode, spot, neck, ma20)
-    arrow = "▲" if pct >= 0 else "▼"
-    support = ("月線之上" if spot >= ma20 else "月線之下")
+    w52 = week52_stats(raw)
+    arrow = "▲" if (pct or 0) >= 0 else "▼"
+    pct_txt = f"({arrow}{abs(pct):.2f}%)" if pct is not None else "(漲跌未知)"
+    neck_txt = f"${neck:.2f}（{dist:+.1f}%）" if neck is not None else "資料不足"
+    if ma20 is None:
+        ma_txt = "月線資料不足（未滿 20 根）"
+    else:
+        ma_txt = f"月線 MA20 ${ma20:.2f}（現價在{'月線之上' if spot >= ma20 else '月線之下'}）"
+    if w52:
+        flag = "｜🏔️ 收盤創52週新高" if w52["close_new_high"] else ("｜🏔️ 盤中創52週新高" if w52["new_high"] else "")
+        flag = flag or ("｜🕳️ 創52週新低" if w52["new_low"] else "")
+        w52_txt = f"🏔️ 52週 高 ${w52['high']} ({w52['from_high_pct']:+.1f}%)／低 ${w52['low']}{flag}\n"
+    else:
+        w52_txt = "🏔️ 52週高低：上市未滿一年，資料不足\n"
     summary = re.sub(r"[\r\x00-\x08]", "", payload.summary).strip()
 
     text = (
         f"📈【美股多空雷達 {APP_VERSION}｜個股戰報】\n"
         f"🕒 {tpe_now().strftime('%Y-%m-%d %H:%M')} (台北) / {et_now().strftime('%H:%M')} (美東)\n"
-        f"🌡️ {sym} 現價 ${spot:.2f} ({arrow}{abs(pct):.2f}%)\n"
-        f"📏 距{payload.neck_days}日{'頸線' if mode == 'LONG' else '跌破線'} (${neck:.2f})：{dist:+.1f}%\n"
-        f"🧭 月線 MA20 ${ma20:.2f}（現價在{support}）\n"
+        f"🌡️ {sym} 現價 ${spot:.2f} {pct_txt}\n"
+        f"📏 距{payload.neck_days}日{'頸線' if mode == 'LONG' else '跌破線'}：{neck_txt}\n"
+        f"🧭 {ma_txt}\n"
+        + w52_txt +
         f"🛡️ 品質：{badge}\n"
         f"⚡ 策略：{STRATEGY_NAMES.get(payload.strategy, payload.strategy)}\n"
         + (f"🧮 {summary}\n" if summary else "")
@@ -771,12 +903,11 @@ def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
             line_status = str(r.status_code)
         except Exception as e:
             line_status = f"error:{type(e).__name__}"
-    ok = line_status in ("200", "not_configured")
-    return {"status": "success" if ok else "failed", "line_status": line_status, "preview_text": text}
+    return {"status": "success" if line_status == "200" else "failed", "line_status": line_status, "preview_text": text}
 
 
 # ==============================================================================
-# 前端 HTML
+# 前端（單頁）。V9.9：選擇權逐腿計價、Plotly Payoff、畫線保留、偏好記憶、錯誤可見
 # ==============================================================================
 HTML_CONTENT = r"""
 <!DOCTYPE html>
@@ -784,7 +915,7 @@ HTML_CONTENT = r"""
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>美股多空雷達戰情室 V9.9</title>
+<title>美股多空雷達戰情室 V10.0</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
@@ -799,6 +930,9 @@ body{background-color:var(--bg-main);color:var(--text-main);}
  #centerMain{order:1!important;} #rightSidebar{order:2!important;} #leftSidebar{order:3!important;max-height:480px!important;}
  .grid-indices{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
  .grid-indices>div:last-child{grid-column:span 2/span 2!important;}
+ .grid-indices>div{flex-wrap:wrap;gap:2px 6px;}
+ .grid-indices>div>span:first-child{white-space:nowrap;}
+ .grid-indices{font-size:0.82rem;}
  body{overflow-y:auto!important;height:auto!important;}
 }
 .pill-active{background-color:#234E70!important;color:#fff!important;font-weight:700!important;}
@@ -811,8 +945,8 @@ select,input{color:var(--text-main);}
 <header class="bg-card border-b border-theme px-3.5 py-2 flex flex-col gap-1.5 shadow-lg shrink-0">
   <div class="flex justify-between items-center flex-wrap gap-2">
     <div class="flex items-center flex-wrap gap-2">
-      <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider">⚡ 美股多空雷達 V9.9</span>
-      <span class="text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">風控強化版</span>
+      <span class="text-lg md:text-xl font-black text-[#38bdf8] tracking-wider">⚡ 美股多空雷達 V10.0</span>
+      <span class="text-xs bg-[#1e293b] text-amber-400 px-2 py-0.5 rounded-full font-bold border border-amber-500/30">真實數據版</span>
       <span id="sessionTag" class="text-xs px-2 py-0.5 rounded-full border border-theme font-bold text-muted">--</span>
       <button onclick="toggleSettingsDrawer()" class="text-xs bg-card px-2.5 py-0.5 rounded border border-theme font-bold">⚙️ 設定</button>
       <button onclick="openChangeLogModal()" class="text-xs bg-card text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 font-bold">📜 改版紀錄</button>
@@ -854,7 +988,12 @@ select,input{color:var(--text-main);}
 <div id="mainLayout" class="flex flex-1 overflow-hidden">
   <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
     <div class="p-3 border-b border-theme space-y-2">
-      <div>
+      <div class="grid grid-cols-3 gap-1 text-xs font-bold">
+        <button id="tab_break" onclick="setListTab('break')" class="py-1.5 rounded bg-[#234E70] text-white">🚀 突破榜</button>
+        <button id="tab_high" onclick="setListTab('high')" class="py-1.5 rounded bg-input text-muted">🏔️ 52週新高</button>
+        <button id="tab_low" onclick="setListTab('low')" class="py-1.5 rounded bg-input text-muted">🕳️ 52週新低</button>
+      </div>
+      <div id="breakModeBox">
         <label class="text-xs text-muted font-bold block mb-1">🎯 選股多空方向：</label>
         <div class="grid grid-cols-2 gap-1.5">
           <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#C0392B] text-white">📈 多方突破</button>
@@ -893,6 +1032,7 @@ select,input{color:var(--text-main);}
       </div>
       <div class="flex items-center gap-2 flex-wrap">
         <div id="earningsTag" class="hidden text-xs bg-amber-500/20 text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 font-bold"></div>
+        <div id="w52Tag" class="hidden text-xs bg-sky-500/15 text-sky-400 px-2 py-0.5 rounded border border-sky-500/40 font-bold"></div>
         <div id="qualityTag" class="text-xs bg-emerald-500/20 text-emerald-500 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">—</div>
         <div id="currentPriceTag" class="text-sm md:text-base font-bold bg-card px-3 py-1 rounded-lg border border-theme shadow">收盤: $-- (--%)</div>
       </div>
@@ -904,9 +1044,10 @@ select,input{color:var(--text-main);}
       <button onclick="toggleIndicator('ma10')" id="pill_ma10" class="pill-inactive px-2 py-0.5 rounded border border-[#2563EB]">10MA</button>
       <button onclick="toggleIndicator('ma20')" id="pill_ma20" class="pill-active px-2 py-0.5 rounded border border-[#7C3AED]">20MA</button>
       <button onclick="toggleIndicator('ma60')" id="pill_ma60" class="pill-active px-2 py-0.5 rounded border border-[#0D9488]">60MA</button>
-      <button onclick="toggleIndicator('ma120')" id="pill_ma120" class="pill-active px-2 py-0.5 rounded border border-[#DB2777]">120MA</button>
+      <button onclick="toggleIndicator('ma120')" id="pill_ma120" class="pill-inactive px-2 py-0.5 rounded border border-[#DB2777]">120MA</button>
       <button onclick="toggleIndicator('ma240')" id="pill_ma240" class="pill-active px-2 py-0.5 rounded border border-[#64748b]">240MA(年線)</button>
       <button onclick="toggleIndicator('bb')" id="pill_bb" class="pill-inactive px-2 py-0.5 rounded border border-[#64748b]">布林</button>
+      <button onclick="toggleIndicator('w52')" id="pill_w52" class="pill-active px-2 py-0.5 rounded border border-[#0EA5E9]">52週高低</button>
       <button onclick="toggleIndicator('neck')" id="pill_neck" class="pill-active px-2 py-0.5 rounded border border-[#B45309]"><span id="neckPillText">頸線</span></button>
     </div>
 
@@ -1005,7 +1146,7 @@ select,input{color:var(--text-main);}
         <button onclick="calculateOptionStrategy()" class="bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg shadow text-sm">風控檢核</button>
         <button onclick="sendCloudPush()" class="bg-[#06C755] text-white font-black py-2 rounded-lg shadow text-sm">📲 LINE 推播</button>
       </div>
-      <div class="text-xs text-muted leading-relaxed">※ 買進以 Ask、賣出以 Bid 計價（較保守）；盤後無報價時改用最後成交價並提示。</div>
+      <div class="text-xs text-muted leading-relaxed">※ 買進以 Ask、賣出以 Bid 計價（較保守）；盤後無報價時改用最後成交價並提示。損益為「到期日」理論值，未含手續費、提前履約與保證金。</div>
     </div>
   </aside>
 </div>
@@ -1018,13 +1159,33 @@ select,input{color:var(--text-main);}
     </div>
     <div class="space-y-3 text-sm max-h-[420px] overflow-y-auto pr-2 text-muted">
       <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
-        <div class="font-bold text-base" style="color:var(--text-main)">V9.9 風控強化防彈版 (2026-10-18)</div>
+        <div class="font-bold text-base" style="color:var(--text-main)">V10.0 真實數據版 (2026-10-18)</div>
         <ul class="list-disc list-inside mt-1 space-y-0.5">
-          <li>修復 cached() 判斷 DataFrame 時引發 ValueError 的 HTTP 500 根本原因。</li>
-          <li>頸線依多空方向計算（空方用N日最低），並與設定的天數同步到 K 線圖。</li>
-          <li>選擇權改為逐腿真實計價：價差、跨式可選第二履約價；Payoff 與損益兩平以真實報價計算。</li>
-          <li>新增財報日提醒（財報在到期日前時自動警示）。</li>
+          <li>修正圖表載入失敗(HTTP 500)：快取判斷誤用 DataFrame 真值，已修。</li>
+          <li>新增 52 週新高／新低榜、個股 52 週區間與位置、圖上 52 週高低虛線；上市未滿一年者顯示「資料不足」而非亂填。</li>
+          <li>全面移除假資料預設值：缺 IV 時 Greeks 顯示「—」(不再假設 35%)；均線不足期數不顯示；月線取不到不再用現價頂替。</li>
+          <li>Greeks 無風險利率改用 13 週美國國庫券殖利率(^IRX)，取不到時明確標示為預設假設。</li>
+          <li>LINE 推播：必須設定通行碼才啟用、錯誤 5 次鎖 5 分鐘、冷卻 30 秒，只在 LINE 回 200 才顯示成功。</li>
+          <li>新增 /api/debug/代號：直接回報 Yahoo 期權／行情請求的真實錯誤，用來查「無期權合約」。</li>
+          <li>x 軸日期移到最下方；手機指數列不再斷字。</li>
         </ul>
+      </div>
+      <div class="border-l-2 border-slate-600 pl-3 py-1">
+        <div class="font-bold text-base" style="color:var(--text-main)">V9.9 風控強化版 (2026-10-18)</div>
+        <ul class="list-disc list-inside mt-1 space-y-0.5">
+          <li>修正均線暖機：年線/半年線不再以不足期數的平均值偽造，改抓更長歷史計算。</li>
+          <li>頸線依多空方向計算（空方用N日最低），並與設定的天數同步到 K 線圖；品質標籤依方向判斷。</li>
+          <li>選擇權改為逐腿真實計價：價差、跨式可選第二履約價；Payoff 與損益兩平以真實報價計算；Greeks 為各腿加總。</li>
+          <li>期權鏈改為選到期日才抓取並加快取，大幅降低 Yahoo 限流造成的「無合約」。</li>
+          <li>篩選器批次下載＋5分鐘快取，並修正全市場只掃前 30 檔的問題。</li>
+          <li>新增財報日提醒（財報在到期日前時警示）。</li>
+          <li>LINE 推播加入通行碼、冷卻與真實送出狀態；推播時間改為台北/美東。</li>
+          <li>切換指標/週期時保留已畫的線；主題與字體記憶；錯誤訊息可見。</li>
+        </ul>
+      </div>
+      <div class="border-l-2 border-slate-600 pl-3 py-1">
+        <div class="font-bold">V9.8 旗艦完全體 (2026-10-17)</div>
+        <ul class="list-disc list-inside mt-1"><li>月K、Plotly 四層圖、中文畫線工具、8 大選擇權策略。</li></ul>
       </div>
     </div>
     <button onclick="closeChangeLogModal()" class="w-full bg-[#38bdf8] text-slate-950 font-black py-2 rounded-lg text-sm">關 閉</button>
@@ -1046,13 +1207,14 @@ select,input{color:var(--text-main);}
 <script>
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
 let currentSpot = 0, currentMA20 = 0, currentNeckline = null;
-let currentSymbol = "XOM", currentInterval = "1d";
+let currentSymbol = "PLTR", currentInterval = "1d";
 let currentSector = "ALL", currentRadarMode = "LONG";
 let universeData = [], currentRawData = null;
 let chainCache = {}, currentChain = null, currentExpirations = [];
 let lastRender = {symbol: null, interval: null};
 let nextEarnings = null;
-let indState = {ma5:true, ma10:false, ma20:true, ma60:true, ma120:true, ma240:true, bb:false, neck:true};
+let listTab = 'break';
+let indState = {ma5:true, ma10:false, ma20:true, ma60:true, ma120:false, ma240:true, bb:false, neck:true, w52:true};
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt$ = v => (v < 0 ? '-$' : '+$') + Math.abs(v).toLocaleString(undefined, {maximumFractionDigits: 0});
@@ -1118,15 +1280,65 @@ async function fetchIndicesData() {
   } catch (e) { setStatus('指數載入失敗：' + e.message, true); }
 }
 
+function setListTab(tab) {
+  listTab = tab;
+  [['break','tab_break'],['high','tab_high'],['low','tab_low']].forEach(([k, id]) => {
+    document.getElementById(id).className = 'py-1.5 rounded ' + (k === tab ? 'bg-[#234E70] text-white' : 'bg-input text-muted');
+  });
+  document.getElementById('breakModeBox').classList.toggle('hidden', tab !== 'break');
+  loadScreenerList();
+}
+
+async function loadWeek52List() {
+  const note = document.getElementById('screenerNote');
+  const data = await api(`/api/week52?kind=${listTab}&sector=${currentSector}`);
+  universeData = data.list;
+  let t = `已掃描 ${data.scanned} 檔`;
+  if (data.failed) t += `，${data.failed} 檔取不到資料`;
+  if (data.insufficient) t += `，${data.insufficient} 檔上市未滿一年(不納入)`;
+  if (data.partial) t += '｜盤中：以當下最新價計算，收盤後才是定案';
+  note.textContent = t;
+  const box = document.getElementById('watchlist');
+  box.innerHTML = '';
+  if (!universeData.length) {
+    box.innerHTML = `<div class="p-4 text-center text-sm text-muted">目前股票池內沒有接近 52 週${listTab === 'high' ? '新高' : '新低'}的標的</div>`;
+    return;
+  }
+  universeData.forEach(item => {
+    const up = (item.pct || 0) >= 0, hi = listTab === 'high';
+    const badge = hi ? (item.close_new_high ? '收盤新高' : (item.new_high ? '盤中新高' : '接近新高')) : (item.close_new_low ? '收盤新低' : (item.new_low ? '盤中新低' : '接近新低'));
+    const dist = hi ? `距高 ${item.from_high_pct}%` : `距低 +${item.from_low_pct}%`;
+    const div = document.createElement('div');
+    div.className = 'px-3 py-2 rounded-lg bg-input hover:opacity-80 transition border border-theme cursor-pointer';
+    div.innerHTML = `
+      <div class="font-bold text-sm flex justify-between">
+        <span>${esc(item.symbol)} <span class="text-xs text-amber-500">[${esc(item.sector)}]</span></span>
+        <span class="text-xs ${hi ? 'text-sky-400 border-sky-500/30' : 'text-amber-500 border-amber-500/30'} bg-card px-1.5 py-0.5 rounded border">${badge}</span>
+      </div>
+      <div class="text-xs text-muted flex justify-between mt-0.5">
+        <span class="truncate max-w-[110px]">${esc(item.name)}</span>
+        <span style="color:${up ? '#C0392B' : '#1E7E5A'}">$${item.price} ${item.pct == null ? '' : '(' + (up ? '▲' : '▼') + Math.abs(item.pct) + '%)'}</span>
+      </div>
+      <div class="text-xs text-muted flex justify-between"><span>量比 ${item.v_ratio == null ? '—' : item.v_ratio + 'x'}</span><span>${dist}</span></div>
+      <div class="text-xs text-muted">52週 ${item.low} – ${item.high}</div>`;
+    div.onclick = () => fetchStockData(item.symbol);
+    box.appendChild(div);
+  });
+}
+
 async function loadScreenerList() {
   const note = document.getElementById('screenerNote');
   note.textContent = '掃描中...';
+  if (listTab !== 'break') {
+    try { await loadWeek52List(); } catch (e) { note.textContent = ''; setStatus('52週榜單載入失敗：' + e.message, true); }
+    return;
+  }
   try {
     const data = await api(`/api/screener?sector=${currentSector}&mode=${currentRadarMode}&neck_days=${neckDays()}&vol_ratio=${volRatio()}`);
     universeData = data.screener_list;
     let t = `已掃描 ${data.scanned} 檔`;
     if (data.failed) t += `，${data.failed} 檔取不到資料`;
-    if (data.partial_volume) t += '｜盤中量比偏低';
+    if (data.partial_volume) t += '｜盤中成交量尚未累積完整，量比會偏低';
     note.textContent = t;
     renderWatchlist();
   } catch (e) { note.textContent = ''; setStatus('篩選失敗：' + e.message, true); }
@@ -1213,6 +1425,12 @@ function renderPlotlyChart(data) {
   document.getElementById('neckPillText').textContent = neckName;
   if (indState.neck && data.neckline != null) T.push(line(Array(d.length).fill(data.neckline), '#B45309', neckName + ' $' + data.neckline, 2, 'dash'));
 
+  const w = data.week52;
+  if (indState.w52 && w) {
+    T.push(line(Array(d.length).fill(w.high), '#0EA5E9', `52週高 $${w.high}（${w.high_date}）`, 1.4, 'dot'));
+    T.push(line(Array(d.length).fill(w.low), '#F59E0B', `52週低 $${w.low}（${w.low_date}）`, 1.4, 'dot'));
+  }
+
   const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(192,57,43,0.7)' : 'rgba(30,126,90,0.7)');
   T.push({x:d, y:data.volumes, type:'bar', marker:{color:volColors}, name:'成交量', xaxis:'x', yaxis:'y2'});
   T.push({x:d, y:data.vol_ma5, type:'scatter', mode:'lines', line:{color:'#B45309', width:1.6, dash:'dot'}, name:'5均量', xaxis:'x', yaxis:'y2'});
@@ -1224,8 +1442,8 @@ function renderPlotlyChart(data) {
 
   const layout = {
     paper_bgcolor:paperBg, plot_bgcolor:plotBg, font:{color:txt, family:'sans-serif', size:13},
-    margin:{l:10, r:55, t:15, b:28}, showlegend:false,
-    xaxis:{type:'category', rangeslider:{visible:false}, gridcolor:grid, nticks:isTouch ? 4 : 8},
+    margin:{l:10, r:55, t:15, b:34}, showlegend:false,
+    xaxis:{type:'category', anchor:'y4', rangeslider:{visible:false}, gridcolor:grid, nticks:isTouch ? 4 : 8},
     yaxis:{domain:[0.52,1.0], gridcolor:grid, side:'right'},
     yaxis2:{domain:[0.36,0.49], gridcolor:grid, side:'right', title:'量'},
     yaxis3:{domain:[0.19,0.33], gridcolor:grid, range:[0,100], tickvals:[20,50,80], side:'right', title:'KD'},
@@ -1243,7 +1461,6 @@ async function fetchStockData(symbol) {
   document.getElementById('chartTitle').innerText = `${symbol} 載入中...`;
   try {
     const data = await api(`/api/quote/${encodeURIComponent(symbol)}?interval=${currentInterval}&mode=${currentRadarMode}&neck_days=${neckDays()}`);
-    setStatus('', false);
     currentSpot = data.spot; currentMA20 = data.ma20_val; currentNeckline = data.neckline;
     const iv = {'1d':'日K','1wk':'週K','1mo':'月K'}[currentInterval];
     document.getElementById('chartTitle').innerText = `${data.symbol} ${data.name} [${data.exchange}] (${iv})`;
@@ -1251,8 +1468,15 @@ async function fetchStockData(symbol) {
     const tag = document.getElementById('currentPriceTag');
     tag.style.color = up ? '#C0392B' : '#1E7E5A';
     tag.innerText = `收盤: $${data.spot} (${up ? '▲' : '▼'}${Math.abs(data.pct)}%) ${data.last_date}`;
-    document.getElementById('spotDisplay').innerText = `$${data.spot} (20MA: $${data.ma20_val})`;
-    document.getElementById('stopLossDisplay').innerText = `${data.neckline != null ? '頸線 $' + data.neckline : '—'} ／ 月線 $${data.ma20_val}`;
+    const m20 = data.ma20_val != null ? '$' + data.ma20_val : '資料不足';
+    document.getElementById('spotDisplay').innerText = `$${data.spot} (20MA: ${m20})`;
+    document.getElementById('stopLossDisplay').innerText = `${data.neckline != null ? '頸線 $' + data.neckline : '—'} ／ 月線 ${m20}`;
+    const wt = document.getElementById('w52Tag'), w5 = data.week52;
+    if (w5) {
+      const flag = w5.close_new_high ? ' 🏔️收盤新高' : (w5.new_high ? ' 🏔️盤中新高' : (w5.new_low ? ' 🕳️創新低' : ''));
+      wt.textContent = `52週 ${w5.low}–${w5.high}｜距高 ${w5.from_high_pct}%｜位置 ${w5.position_pct == null ? '—' : w5.position_pct + '%'}${flag}`;
+    } else { wt.textContent = '52週：上市未滿一年，資料不足'; }
+    wt.classList.remove('hidden');
     document.getElementById('qualityTag').innerText = data.quality_badge;
     renderPlotlyChart(data);
     loadOptionChain(data.symbol);
@@ -1279,10 +1503,11 @@ function checkEarningsVsExpiry() {
   const exp = document.getElementById('expDateSelect').value;
   const note = document.getElementById('chainNote');
   if (nextEarnings && exp && nextEarnings <= exp) {
-    note.textContent = `⚠️ 財報日 ${nextEarnings} 落在到期日 ${exp} 之前：賣方策略請特別留意跳空風險。`;
+    note.textContent = `⚠️ 財報日 ${nextEarnings} 落在到期日 ${exp} 之前：IV 可能在財報後大幅下降(IV Crush)，股價也可能跳空，賣方策略請特別留意。`;
   }
 }
 
+/* ===================== 選擇權 ===================== */
 const STRAT = {
   csp:      {legs:[{t:'put', side:-1, k:1}], list:'put'},
   cc:       {legs:[{t:'call', side:-1, k:1}], list:'call', stock:true},
@@ -1342,8 +1567,8 @@ async function onExpirationChange() {
 function onStrategyChange() { if (currentChain) populateStrikes(); }
 
 function optLabel(o) {
-  const q = (o.bid > 0 || o.ask > 0) ? `Bid ${o.bid} / Ask ${o.ask}` : `最後成交 ${o.last}`;
-  return `$${o.strike.toFixed(2)} | ${q} | IV ${(o.impliedVolatility * 100).toFixed(0)}% | OI ${o.openInterest.toLocaleString()}`;
+  const q = (o.bid > 0 || o.ask > 0) ? `Bid ${o.bid} / Ask ${o.ask}` : `最後成交 ${o.last}（無即時報價）`;
+  return `$${o.strike.toFixed(2)} | ${q} | IV ${o.impliedVolatility == null ? '—' : (o.impliedVolatility * 100).toFixed(0) + '%'} | OI ${o.openInterest.toLocaleString()}`;
 }
 function populateStrikes() {
   const S = STRAT[stratKey()];
@@ -1370,7 +1595,7 @@ function autoAlignMA20() {
   const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
   if (!list.length) return;
   let target = currentMA20 || currentSpot;
-  if (stratKey() === 'straddle') target = currentSpot;
+  if (stratKey() === 'straddle') target = currentSpot;   // 跨式取最接近現價(ATM)
   const i1 = nearestIdx(list, target);
   document.getElementById('strikeSelect').selectedIndex = i1;
   if (S.k2) {
@@ -1383,6 +1608,7 @@ function autoAlignMA20() {
 }
 
 function legPrice(o, side) {
+  // 買進用 Ask、賣出用 Bid；缺報價時退回最後成交價
   const p = side > 0 ? (o.ask > 0 ? o.ask : o.last) : (o.bid > 0 ? o.bid : o.last);
   return {price: p, approx: !(side > 0 ? o.ask > 0 : o.bid > 0)};
 }
@@ -1403,13 +1629,14 @@ function buildLegs() {
     let opt;
     if (L.k === 2) opt = o2;
     else if (L.t === (S.list)) opt = o1;
-    else {
+    else {   // 跨式的另一腿：同履約價的對向合約
       const other = (L.t === 'call' ? currentChain.calls : currentChain.puts) || [];
       opt = other[nearestIdx(other, o1.strike)];
     }
     const pp = legPrice(opt, L.side);
     return {t: L.t, side: L.side, strike: opt.strike, prem: pp.price, approx: pp.approx, iv: opt.impliedVolatility};
   });
+  // 價差方向檢查
   if (key === 'bull_put' && legs[1].strike >= legs[0].strike) return {error: 'Bull Put：買進腿履約價必須低於賣出腿'};
   if (key === 'bear_put' && legs[1].strike >= legs[0].strike) return {error: 'Bear Put：賣出腿履約價必須低於買進腿'};
   if (key === 'bull_call' && legs[1].strike <= legs[0].strike) return {error: 'Bull Call：賣出腿履約價必須高於買進腿'};
@@ -1469,14 +1696,17 @@ async function recompute() {
   document.getElementById('payoffBE').textContent = res.be.length ? res.be.map(b => '$' + b.toFixed(2)).join(' / ') : '無（不會損益兩平）';
   drawPayoff(built, res);
 
+  // Greeks：各腿加總
   const exp = document.getElementById('expDateSelect').value;
   const days = Math.max(0.5, (new Date(exp + 'T21:00:00Z') - Date.now()) / 86400000);
   const T = days / 365;
   try {
-    const gs = await Promise.all(built.legs.map(L => {
-      const sigma = L.iv > 0.01 ? L.iv : 0.35;
-      return api(`/api/greeks?S=${currentSpot}&K=${L.strike}&T=${T}&sigma=${sigma}&type=${L.t}`);
-    }));
+    if (built.legs.some(L => !(L.iv > 0.01))) {
+      ['Delta','Theta','Gamma','Vega'].forEach(k => document.getElementById('val' + k).innerText = '—');
+      return;   // 有合約缺 IV：不用猜測值算 Greeks
+    }
+    const gs = await Promise.all(built.legs.map(L =>
+      api(`/api/greeks?S=${currentSpot}&K=${L.strike}&T=${T}&sigma=${L.iv}&type=${L.t}`)));
     const sum = k => built.legs.reduce((a, L, i) => a + L.side * gs[i][k], 0) + (k === 'delta' && built.stock ? 1 : 0);
     ['delta','theta','gamma','vega'].forEach(k => document.getElementById('val' + k[0].toUpperCase() + k.slice(1)).innerText = sum(k).toFixed(4));
   } catch (e) {}
@@ -1488,23 +1718,24 @@ function calculateOptionStrategy() {
   const exp = document.getElementById('expDateSelect').value;
   const days = Math.max(1, Math.ceil((new Date(exp + 'T21:00:00Z') - Date.now()) / 86400000));
   const lines = [`標的 ${currentSymbol}｜到期 ${exp}（約 ${days} 天）`];
+  const net = L.reduce((s, x) => s + (x.side > 0 ? -x.prem : x.prem), 0);
   if (key === 'csp') {
     const be = L[0].strike - L[0].prem;
     const buffer = (currentSpot - be) / currentSpot * 100;
     const ann = (L[0].prem / L[0].strike) * (365 / days) * 100;
     lines.push(`損益兩平 $${be.toFixed(2)}，距現價下跌空間 ${buffer.toFixed(1)}%（${buffer >= 8 ? '✅ 緩衝充足' : '⚠️ 緩衝偏窄(<8%)'}）`);
     lines.push(`年化報酬(以履約價為保證金) ≈ ${ann.toFixed(1)}%`);
-    lines.push(`最壞情況每口虧損 ${fmt$(a.minP)}；接股成本 $${be.toFixed(2)}。`);
+    lines.push(`最壞情況(股價歸零)每口虧損 ${fmt$(a.minP)}；接股成本 $${be.toFixed(2)}，請確認願意持有。`);
   } else if (key === 'cc') {
     const ann = ((L[0].prem + Math.max(0, L[0].strike - currentSpot)) / currentSpot) * (365 / days) * 100;
-    lines.push(`若被履約最大獲利 ${fmt$(a.maxP)}（含權利金與價差），年化 ≈ ${ann.toFixed(1)}%`);
+    lines.push(`若被履約最大獲利 ${fmt$(a.maxP)}（含權利金與價差），年化 ≈ ${ann.toFixed(1)}%（假設持有到到期）`);
     lines.push(`下跌風險：現股下跌的損失只被權利金 $${L[0].prem.toFixed(2)} 小幅緩衝。`);
   } else {
     const rr = a.maxP === Infinity ? '無上限' : (a.minP < 0 ? (a.maxP / Math.abs(a.minP)).toFixed(2) + ' : 1' : '—');
     lines.push(`最大獲利 ${a.maxP === Infinity ? '無上限' : fmt$(a.maxP)}｜最大虧損 ${fmt$(a.minP)}｜報酬風險比 ${rr}`);
     lines.push(`損益兩平 ${a.be.length ? a.be.map(b => '$' + b.toFixed(2)).join(' / ') : '無'}（現價 $${currentSpot}）`);
   }
-  if (L.some(x => x.iv <= 0.01)) lines.push('⚠️ 有合約缺 IV 報價，Greeks 以 35% 估算。');
+  if (L.some(x => !(x.iv > 0.01))) lines.push('⚠️ 有合約缺 IV 報價（可能盤後或無量），Greeks 顯示「—」，不以假設值替代。');
   if (nextEarnings && nextEarnings <= exp) lines.push(`⚠️ 財報日 ${nextEarnings} 在到期日前。`);
   const box = document.getElementById('riskBox');
   box.textContent = lines.join('\n');
@@ -1512,6 +1743,9 @@ function calculateOptionStrategy() {
 }
 
 async function sendCloudPush() {
+  let pin = '';
+  try { pin = sessionStorage.getItem('us_pin') || ''; } catch (e) {}
+  if (!pin) { pin = prompt('請輸入管理員通行碼 (ADMIN_PUSH_PIN)') || ''; if (!pin) return; }
   let summary = '';
   if (lastBuilt && lastAnalysis) {
     const legsTxt = lastBuilt.legs.map(L => `${L.side > 0 ? '買' : '賣'} ${L.t === 'call' ? 'Call' : 'Put'} $${L.strike}@${L.prem}`).join(' + ');
@@ -1521,14 +1755,16 @@ async function sendCloudPush() {
   try {
     const r = await api('/api/line/push', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json', 'X-Push-Pin': pin},
       body: JSON.stringify({symbol: currentSymbol, strategy: stratKey(), mode: currentRadarMode, neck_days: neckDays(), summary})
     });
+    try { sessionStorage.setItem('us_pin', pin); } catch (e) {}
     result.textContent = r.status === 'success' ? '✅ 已成功送出 LINE 推播' : `❌ 推播失敗（LINE 狀態：${r.line_status}）`;
     result.style.color = r.status === 'success' ? '#06C755' : '#ef4444';
     document.getElementById('linePreviewText').innerText = r.preview_text;
     document.getElementById('lineModal').classList.remove('hidden');
   } catch (e) {
+    if (/通行碼錯誤/.test(e.message)) { try { sessionStorage.removeItem('us_pin'); } catch (x) {} }
     setStatus('推播失敗：' + e.message, true);
   }
 }
