@@ -1207,6 +1207,7 @@ select,input{color:var(--text-main);}
         </div>
         <div id="chainNote" class="text-xs text-amber-500"></div>
         <div id="chainSrc" class="text-xs text-muted"></div>
+        <div id="chainDte" class="text-xs text-amber-500"></div>
         <button id="retryChainBtn" onclick="onExpirationChange()" class="hidden w-full text-xs py-1 rounded border border-amber-500/50 text-amber-500 font-bold">↻ 重試取得期權鏈</button>
       </div>
 
@@ -1616,6 +1617,7 @@ async function loadOptionChain(symbol) {
   document.getElementById('retryChainBtn').classList.add('hidden');
   currentChain = null; chainCache = {};
   document.getElementById('chainSrc').textContent = '';
+  document.getElementById('chainDte').textContent = '';
   try {
     const r = await api('/api/options/' + encodeURIComponent(symbol));
     if (symbol !== currentSymbol) return;
@@ -1628,6 +1630,10 @@ async function loadOptionChain(symbol) {
     }
     expSel.innerHTML = currentExpirations.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
     document.getElementById('chainSrc').textContent = r.source_label ? '期權資料來源：' + r.source_label : '';
+    // 預設選距今 ≥21 天的第一個到期日（避免一打開就選到明天到期的合約）；沒有就用第一個
+    const dteOf = e => (new Date(e + 'T21:00:00Z') - Date.now()) / 86400000;
+    const pick = currentExpirations.find(e => dteOf(e) >= 21) || currentExpirations[0];
+    expSel.value = pick;
     onExpirationChange();
   } catch (e) {
     expSel.innerHTML = '<option value="">⚠️ 取得失敗</option>';
@@ -1647,6 +1653,8 @@ async function onExpirationChange() {
     if (!chainCache[key]) chainCache[key] = await api(`/api/options/${encodeURIComponent(currentSymbol)}/chain?exp=${exp}&spot=${currentSpot}`);
     currentChain = chainCache[key];
     note.textContent = '';
+    const dd = Math.max(0, Math.ceil((new Date(exp + 'T21:00:00Z') - Date.now()) / 86400000));
+    document.getElementById('chainDte').textContent = dd <= 7 ? `⚠️ 距到期僅 ${dd} 天：Gamma 風險極高，股價小幅變動就會讓損益劇烈變化，且深度價內合約買賣價差可能很大。` : '';
     checkEarningsVsExpiry();
     populateStrikes();
   } catch (e) {
@@ -1686,7 +1694,20 @@ function autoAlignMA20() {
   if (!list.length) return;
   let target = currentMA20 || currentSpot;
   if (stratKey() === 'straddle') target = currentSpot;   // 跨式取最接近現價(ATM)
-  const i1 = nearestIdx(list, target);
+  let i1;
+  const k = stratKey();
+  if (k === 'csp' || k === 'bull_put') {
+    // 賣出賣權：履約價不應高於現價（否則是價內，不是「低接」）；取 min(月線, 現價) 以下最近的履約價
+    const cap = Math.min(currentMA20 || currentSpot, currentSpot);
+    const below = list.map((o, i) => ({i, k: o.strike})).filter(x => x.k <= cap);
+    i1 = below.length ? below[below.length - 1].i : nearestIdx(list, cap);
+  } else if (k === 'cc') {
+    const flo = Math.max(currentMA20 || currentSpot, currentSpot);
+    const above = list.map((o, i) => ({i, k: o.strike})).filter(x => x.k >= flo);
+    i1 = above.length ? above[0].i : nearestIdx(list, flo);
+  } else {
+    i1 = nearestIdx(list, target);
+  }
   document.getElementById('strikeSelect').selectedIndex = i1;
   if (S.k2) {
     const t2 = list[i1].strike * (1 + 0.05 * S.k2);
