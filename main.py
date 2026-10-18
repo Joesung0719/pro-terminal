@@ -1309,6 +1309,19 @@ body{background-color:var(--bg-main);color:var(--text-main);}
  #leftSidebar,#rightSidebar,#centerMain{width:100%!important;height:auto!important;border:none!important;border-bottom:1px solid var(--border-col)!important;}
  #centerMain{order:1!important;} #rightSidebar{order:2!important;max-height:none!important;} #leftSidebar{order:3!important;max-height:480px!important;}
 }
+#optToggle,#optBackdrop{display:none;}
+@media (max-width:1280px){.optClose{display:inline-block!important;}}
+/* ≤1280px：選擇權面板改成右側滑出抽屜，預設收起；點右側「選擇權」分頁或按 ✕／點背景關閉 */
+@media (max-width:1280px){
+ #rightSidebar{position:fixed!important;top:0!important;right:0!important;bottom:0!important;height:100vh!important;max-height:none!important;
+   width:min(480px,92vw)!important;transform:translateX(105%);transition:transform .25s ease;z-index:60;border:none!important;
+   border-left:1px solid var(--border-col)!important;box-shadow:-8px 0 24px rgba(0,0,0,.45);overflow-y:auto!important;order:0!important;}
+ #rightSidebar.open{transform:translateX(0);}
+ #optToggle{display:flex;position:fixed;right:0;top:45%;z-index:55;writing-mode:vertical-rl;align-items:center;gap:4px;
+   background:#38bdf8;color:#0b0e14;font-weight:900;padding:14px 8px;border-radius:10px 0 0 10px;box-shadow:-3px 2px 10px rgba(0,0,0,.4);cursor:pointer;border:none;font-size:0.95rem;}
+ #optBackdrop.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:58;}
+ #centerMain{grid-row:1 / span 2!important;}
+}
 @media (max-width:1024px){
  .grid-indices{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
  .grid-indices>div:last-child{grid-column:span 2/span 2!important;}
@@ -1366,6 +1379,8 @@ select,input{color:var(--text-main);}
   </div>
 </header>
 
+<button id="optToggle" onclick="toggleOptions()">📊 選擇權風控 ◀</button>
+<div id="optBackdrop" onclick="toggleOptions(false)"></div>
 <div id="mainLayout" class="flex flex-1 overflow-hidden">
   <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
     <div class="p-3 border-b border-theme space-y-2">
@@ -1449,7 +1464,10 @@ select,input{color:var(--text-main);}
   <aside id="rightSidebar" class="w-96 bg-card border-l border-theme flex flex-col p-4 shrink-0 overflow-y-auto">
     <h2 class="text-sm font-black mb-2.5 flex items-center justify-between">
       <span>📊 選擇權策略風控</span>
-      <span class="text-xs bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">逐腿真實報價</span>
+      <span class="flex items-center gap-2">
+        <span class="text-xs bg-emerald-500 text-slate-950 font-black px-2 py-0.5 rounded">逐腿真實報價</span>
+        <button onclick="toggleOptions(false)" class="optClose text-muted text-lg px-1" style="display:none">✕</button>
+      </span>
     </h2>
     <div class="space-y-2.5 text-sm">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -1640,6 +1658,13 @@ function setFontSize(size) {
   });
   document.documentElement.style.fontSize = size === 'large' ? '19.2px' : (size === 'xlarge' ? '22.4px' : '16px');
   try { localStorage.setItem('us_font', size); } catch (e) {}
+}
+function toggleOptions(force) {
+  const d = document.getElementById('rightSidebar'), bd = document.getElementById('optBackdrop');
+  const open = typeof force === 'boolean' ? force : !d.classList.contains('open');
+  d.classList.toggle('open', open);
+  bd.classList.toggle('show', open);
+  if (open) { setTimeout(() => { try { Plotly.Plots.resize('payoffChart'); } catch (e) {} }, 300); }
 }
 function openChangeLogModal() { document.getElementById('changeLogModal').classList.remove('hidden'); }
 function closeChangeLogModal() { document.getElementById('changeLogModal').classList.add('hidden'); }
