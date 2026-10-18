@@ -397,7 +397,7 @@ def init_universe():
     rows = _read_universe_file(UNIVERSE_FILE)
     if rows:
         _UNI_META["note"] = ""
-        return _build_universe(rows, "us_universe.json（標普500＋那斯達克100）")
+        return _build_universe(rows, "us_universe.json，標普500＋那斯達克100")
     rows = _read_universe_file(UNIVERSE_CACHE, 30)
     if rows:
         return _build_universe(rows, "上次抓取的成分股快取")
@@ -1648,7 +1648,7 @@ let uniRetry = null;
 function sectorTag(k) { return (sectorLabels[k] || k || '').replace(/^\S+\s/, ''); }
 function uniText(u) {
   if (!u) return '';
-  let t = `股票池 ${u.total} 檔（${u.source}）`;
+  let t = `股票池 ${u.total} 檔｜來源：${u.source}`;
   if (u.age_min != null) t += `｜資料更新於 ${u.age_min < 1 ? '剛剛' : u.age_min + ' 分鐘前'}`;
   if (u.refreshing) t += `｜更新中 ${u.progress}/${u.progress_total}`;
   if (u.note) t += `｜${u.note}`;
@@ -1724,7 +1724,7 @@ async function loadWeek52List() {
         <span class="text-xs ${hi ? 'text-sky-400 border-sky-500/30' : 'text-amber-500 border-amber-500/30'} bg-card px-1.5 py-0.5 rounded border">${badge}</span>
       </div>
       <div class="text-xs text-muted flex justify-between mt-0.5">
-        <span class="truncate max-w-[110px]">${esc(item.name)}</span>
+        <span class="truncate max-w-[110px]">${item.name && item.name !== item.symbol ? esc(item.name) : '&nbsp;'}</span>
         <span style="color:${up ? '#C0392B' : '#1E7E5A'}">$${item.price} ${item.pct == null ? '' : '(' + (up ? '▲' : '▼') + Math.abs(item.pct) + '%)'}</span>
       </div>
       <div class="text-xs text-muted flex justify-between"><span>量比 ${item.v_ratio == null ? '—' : item.v_ratio + 'x'}</span><span>${dist}</span></div>
@@ -1772,7 +1772,7 @@ function renderWatchlist() {
         <span class="text-xs text-emerald-500 bg-card px-1.5 py-0.5 rounded border border-emerald-500/20">${esc(item.score)}${item.first_day ? '·首日' : ''}</span>
       </div>
       <div class="text-xs text-muted flex justify-between mt-0.5">
-        <span class="truncate max-w-[110px]">${esc(item.name)}</span>
+        <span class="truncate max-w-[110px]">${item.name && item.name !== item.symbol ? esc(item.name) : '&nbsp;'}</span>
         <span style="color:${up ? '#C0392B' : '#1E7E5A'}">$${item.price} (${up ? '▲' : '▼'}${Math.abs(item.pct)}%)</span>
       </div>
       <div class="text-xs text-muted flex justify-between"><span>量比 ${item.v_ratio}x</span><span>距${currentRadarMode === 'LONG' ? '頸線' : '跌破線'} ${item.dist_neck_pct > 0 ? '+' : ''}${item.dist_neck_pct}%</span></div>`;
