@@ -1320,7 +1320,7 @@ body{background-color:var(--bg-main);color:var(--text-main);}
  #optToggle{display:flex;position:fixed;right:0;top:45%;z-index:55;writing-mode:vertical-rl;align-items:center;gap:4px;
    background:#38bdf8;color:#0b0e14;font-weight:900;padding:14px 8px;border-radius:10px 0 0 10px;box-shadow:-3px 2px 10px rgba(0,0,0,.4);cursor:pointer;border:none;font-size:0.95rem;}
  #optBackdrop.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:58;}
- #centerMain{grid-row:1 / span 2!important;}
+ #centerMain{grid-row:1 / span 2!important;padding-right:44px!important;}  /* 讓出右緣給「選擇權」分頁，不蓋住價格軸 */
 }
 @media (max-width:1024px){
  .grid-indices{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
@@ -1737,7 +1737,7 @@ async function loadWeek52List() {
   universeData = data.list;
   let t = `已掃描 ${data.scanned} 檔`;
   if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，自動更新中`;
-  if (data.failed && (!data.universe || data.universe.ready)) t += `，${data.failed} 檔取不到資料`;
+  if (data.failed && (!data.universe || data.universe.ready)) t += (data.universe && data.universe.refreshing) ? `，${data.failed} 檔尚待更新` : `，${data.failed} 檔取不到資料`;
   if (data.insufficient) t += `，${data.insufficient} 檔上市未滿一年(不納入)`;
   if (data.partial) t += '｜盤中：以當下最新價計算，收盤後才是定案';
   if (data.universe) t += '｜' + uniText(data.universe);
@@ -1783,7 +1783,7 @@ async function loadScreenerList() {
     universeData = data.screener_list;
     let t = `已掃描 ${data.scanned} 檔`;
     if (data.universe && !data.universe.ready) t = `⏳ 股票池資料載入中（${data.universe.loaded}/${data.universe.total}），結果尚不完整，自動更新中`;
-    if (data.failed && (!data.universe || data.universe.ready)) t += `，${data.failed} 檔取不到資料`;
+    if (data.failed && (!data.universe || data.universe.ready)) t += (data.universe && data.universe.refreshing) ? `，${data.failed} 檔尚待更新` : `，${data.failed} 檔取不到資料`;
     if (data.partial_volume) t += '｜盤中成交量尚未累積完整，量比會偏低';
     if (data.universe) t += '｜' + uniText(data.universe);
     note.textContent = t; note.title = uniTip(data.universe);
