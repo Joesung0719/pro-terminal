@@ -638,6 +638,14 @@ def debug_symbol(symbol: str):
             raw[name] = {"status": r.status_code, "bytes": len(r.content), "head": r.text[:160].replace("\n", " ")}
         except Exception as e:
             raw[name] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    try:
+        r = requests.get(f"https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json", headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        j = r.json()
+        raw["cboe_top_keys"] = list(j.keys())
+        raw["cboe_data_keys"] = list((j.get("data") or {}).keys())[:20]
+        raw["cboe_sample_options"] = ((j.get("data") or {}).get("options") or [])[100:102]
+    except Exception as e:
+        raw["cboe_sample_error"] = f"{type(e).__name__}: {str(e)[:120]}"
     out["raw_probe"] = raw
     out["recent_cache_errors"] = {str(k): v for k, v in list(_LAST_ERR.items())[-10:]}
     return out
@@ -751,19 +759,75 @@ def get_next_earnings(symbol: str):
 # ==============================================================================
 # 選擇權：改為「先取到期日、選了再取該到期日合約」，不再一次抓全部到期日
 # ==============================================================================
-def _expirations(sym: str):
+_OPT_SRC = {}          # sym -> "yahoo" | "cboe"，標示這檔目前用哪個資料來源
+_OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
+_SRC_LABEL = {"yahoo": "Yahoo Finance", "cboe": "Cboe 延遲報價（約延遲 15 分鐘）"}
+
+
+def _num(x):
+    """數字或 None；不把缺值當 0。"""
+    try:
+        if x is None or isinstance(x, bool):
+            return None
+        v = float(x)
+        return None if (math.isnan(v) or math.isinf(v)) else v
+    except Exception:
+        return None
+
+
+def _cboe_options(sym: str):
+    """Cboe 公開延遲報價：回傳 {到期日: {"calls": [...], "puts": [...]}}。
+    欄位缺值一律保持 None；IV 單位不確定時(>=10 視為異常)寧可不用也不猜。"""
     def _load():
-        last = None
-        for _ in range(2):
-            try:
-                exps = list(yf.Ticker(sym).options or [])
-                if exps:
-                    return exps
-            except Exception as e:
-                last = e
-                time.sleep(0.8)
-        if last:
-            raise last
+        r = requests.get(f"https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        r.raise_for_status()
+        opts = ((r.json() or {}).get("data") or {}).get("options") or []
+        out = {}
+        for o in opts:
+            m = _OCC_RE.match(str(o.get("option", "")))
+            if not m or m.group(1) != sym:       # 排除調整後合約(不同 root)
+                continue
+            ymd = m.group(2)
+            exp = f"20{ymd[0:2]}-{ymd[2:4]}-{ymd[4:6]}"
+            iv = _num(o.get("iv"))
+            row = {
+                "strike": int(m.group(4)) / 1000.0,
+                "bid": _num(o.get("bid")) or 0.0,
+                "ask": _num(o.get("ask")) or 0.0,
+                "last": _num(o.get("last_trade_price", o.get("last"))) or 0.0,
+                "impliedVolatility": iv if (iv is not None and 0.01 < iv < 10) else None,
+                "volume": int(_num(o.get("volume")) or 0),
+                "openInterest": int(_num(o.get("open_interest")) or 0),
+            }
+            out.setdefault(exp, {"calls": [], "puts": []})["calls" if m.group(3) == "C" else "puts"].append(row)
+        today = et_now().strftime("%Y-%m-%d")
+        out = {e: v for e, v in out.items() if e >= today}
+        for v in out.values():
+            v["calls"].sort(key=lambda x: x["strike"]); v["puts"].sort(key=lambda x: x["strike"])
+        if not out:
+            raise ValueError("Cboe 回傳中沒有此標的的有效合約")
+        return out
+    return cached(("cboe", sym), 120, _load)
+
+
+def _expirations(sym: str):
+    """先試 Yahoo；Yahoo 回空或出錯就改用 Cboe。兩者都不是猜的，來源會回報給前端。"""
+    def _load():
+        yerr = None
+        try:
+            exps = list(yf.Ticker(sym).options or [])
+            if exps:
+                _OPT_SRC[sym] = "yahoo"
+                return exps
+        except Exception as e:
+            yerr = e
+        c = _cboe_options(sym)
+        if c:
+            _OPT_SRC[sym] = "cboe"
+            return sorted(c.keys())
+        if yerr:
+            raise yerr
         return []
     return cached(("exps", sym), 600, _load) or []
 
@@ -773,10 +837,11 @@ def get_option_expirations(symbol: str):
     sym = clean_symbol(symbol)
     exps = _expirations(sym)
     if not exps:
-        why = _LAST_ERR.get(("exps", sym))
-        msg = ("Yahoo 取得到期日失敗：" + why) if why else "Yahoo 回傳的到期日清單是空的（此標的無期權，或 Yahoo 暫時不提供）"
+        why = _LAST_ERR.get(("exps", sym)) or _LAST_ERR.get(("cboe", sym))
+        msg = ("取得到期日失敗：" + why) if why else "Yahoo 與 Cboe 都沒有此標的的期權合約（可能該標的沒有掛牌期權）"
         return {"expirations": [], "error": msg + f"｜可開 /api/debug/{sym} 查看原因"}
-    return {"expirations": exps}
+    src = _OPT_SRC.get(sym, "yahoo")
+    return {"expirations": exps, "source": src, "source_label": _SRC_LABEL[src]}
 
 
 @app.get("/api/options/{symbol}/chain")
@@ -784,32 +849,40 @@ def get_option_chain(symbol: str, exp: str, spot: float = 0.0):
     sym = clean_symbol(symbol)
     if exp not in (_expirations(sym) or []):
         raise HTTPException(status_code=400, detail="到期日不在此標的的合約清單內")
+    src = _OPT_SRC.get(sym, "yahoo")
+
+    def _in_range(k):
+        return not (spot > 0 and not (spot * 0.5 <= k <= spot * 1.5))
 
     def _load():
+        if src == "cboe":
+            c = _cboe_options(sym) or {}
+            d = c.get(exp) or {"calls": [], "puts": []}
+            return {"puts": [r for r in d["puts"] if _in_range(r["strike"])],
+                    "calls": [r for r in d["calls"] if _in_range(r["strike"])]}
         oc = yf.Ticker(sym).option_chain(exp)
 
         def _rows(frame):
             rows = []
             for _, r in frame.iterrows():
                 k = _f(r.get("strike"))
-                if spot > 0 and not (spot * 0.5 <= k <= spot * 1.5):
+                if not _in_range(k):
                     continue
                 iv = _f(r.get("impliedVolatility"), 0.0)
                 rows.append({
                     "strike": k, "bid": _f(r.get("bid")), "ask": _f(r.get("ask")), "last": _f(r.get("lastPrice")),
-                    # Yahoo 沒有有效報價時 IV 會是極小值；此時回傳 None，不填 35% 之類的猜測值
                     "impliedVolatility": iv if iv > 0.01 else None,
                     "volume": int(_f(r.get("volume"))), "openInterest": int(_f(r.get("openInterest"))),
                 })
             return rows
-
         return {"puts": _rows(oc.puts), "calls": _rows(oc.calls)}
 
-    data = cached(("chain", sym, exp, round(_f(spot), 0)), 120, _load)
+    key = ("chain", sym, exp, src, round(_f(spot), 0))
+    data = cached(key, 120, _load)
     if not data or (not data["puts"] and not data["calls"]):
-        why = _LAST_ERR.get(("chain", sym, exp, round(_f(spot), 0)))
+        why = _LAST_ERR.get(key) or _LAST_ERR.get(("cboe", sym))
         raise HTTPException(status_code=502, detail="取得期權鏈失敗" + (f"：{why}" if why else "，請稍後重試"))
-    return data
+    return {**data, "source": src, "source_label": _SRC_LABEL[src]}
 
 
 @app.get("/api/greeks")
@@ -1133,6 +1206,7 @@ select,input{color:var(--text-main);}
           <select id="strike2Select" onchange="recompute()" class="w-full bg-card border border-theme rounded p-2 font-bold"></select>
         </div>
         <div id="chainNote" class="text-xs text-amber-500"></div>
+        <div id="chainSrc" class="text-xs text-muted"></div>
         <button id="retryChainBtn" onclick="onExpirationChange()" class="hidden w-full text-xs py-1 rounded border border-amber-500/50 text-amber-500 font-bold">↻ 重試取得期權鏈</button>
       </div>
 
@@ -1541,6 +1615,7 @@ async function loadOptionChain(symbol) {
   document.getElementById('chainNote').textContent = '';
   document.getElementById('retryChainBtn').classList.add('hidden');
   currentChain = null; chainCache = {};
+  document.getElementById('chainSrc').textContent = '';
   try {
     const r = await api('/api/options/' + encodeURIComponent(symbol));
     if (symbol !== currentSymbol) return;
@@ -1552,6 +1627,7 @@ async function loadOptionChain(symbol) {
       return;
     }
     expSel.innerHTML = currentExpirations.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+    document.getElementById('chainSrc').textContent = r.source_label ? '期權資料來源：' + r.source_label : '';
     onExpirationChange();
   } catch (e) {
     expSel.innerHTML = '<option value="">⚠️ 取得失敗</option>';
