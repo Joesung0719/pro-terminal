@@ -934,8 +934,8 @@ def debug_symbol(symbol: str):
 
 
 def _name_for(symbol: str):
-    if symbol in UNIVERSE_BY_SYMBOL:
-        it = UNIVERSE_BY_SYMBOL[symbol]
+    it = UNIVERSE_BY_SYMBOL.get(symbol)
+    if it and it["name"] != symbol:          # 只有真的有中文名才直接用；否則往下查英文簡稱
         return it["name"], it["market"]
 
     def _load():
@@ -1295,12 +1295,12 @@ body{background-color:var(--bg-main);color:var(--text-main);}
 .text-muted{color:var(--text-muted);} .bg-input{background-color:var(--input-bg);}
 #leftSidebar{width:clamp(270px,21vw,384px)!important;}
 #rightSidebar{width:clamp(310px,25vw,461px)!important;}
-/* 平板／小筆電（≤1280px）：圖表獨佔一整列，下面左右並排「清單｜選擇權」，避免三欄把圖表擠到只剩一小塊 */
-@media (max-width:1280px){
- #mainLayout{flex-direction:row!important;flex-wrap:wrap!important;align-content:flex-start;height:auto!important;overflow-y:auto!important;}
- #centerMain{order:1!important;flex:none!important;width:100%!important;height:auto!important;border:none!important;}
- #leftSidebar{order:2!important;width:42%!important;max-height:640px!important;border-top:1px solid var(--border-col)!important;}
- #rightSidebar{order:3!important;width:58%!important;height:auto!important;max-height:640px!important;border-top:1px solid var(--border-col)!important;}
+/* 平板／小筆電（821–1280px）：左＝選股清單（固定在視窗內可捲動）；右＝上圖表、下選擇權。清單先看、圖表居中，與桌機順序一致 */
+@media (min-width:821px) and (max-width:1280px){
+ #mainLayout{display:grid!important;grid-template-columns:clamp(250px,27vw,320px) minmax(0,1fr);grid-template-rows:auto auto;align-content:start;height:auto!important;overflow-y:auto!important;}
+ #leftSidebar{grid-column:1;grid-row:1 / span 2;width:auto!important;height:calc(100vh - 8px)!important;max-height:none!important;position:sticky;top:0;align-self:start;border-right:1px solid var(--border-col)!important;}
+ #centerMain{grid-column:2;grid-row:1;width:auto!important;height:auto!important;min-width:0;}
+ #rightSidebar{grid-column:2;grid-row:2;width:auto!important;height:auto!important;max-height:none!important;border-left:none!important;border-top:1px solid var(--border-col)!important;}
  body{overflow-y:auto!important;height:auto!important;}
 }
 /* 手機／窄螢幕（≤820px）：全部直向堆疊 */
@@ -1886,7 +1886,7 @@ async function fetchStockData(symbol) {
     const data = await api(`/api/quote/${encodeURIComponent(symbol)}?interval=${currentInterval}&mode=${currentRadarMode}&neck_days=${neckDays()}`);
     currentSpot = data.spot; currentMA20 = data.ma20_val; currentNeckline = data.neckline;
     const iv = {'1d':'日K','1wk':'週K','1mo':'月K'}[currentInterval];
-    document.getElementById('chartTitle').innerText = `${data.symbol} ${data.name} [${data.exchange}] (${iv})`;
+    document.getElementById('chartTitle').innerText = `${data.symbol}${data.name && data.name !== data.symbol ? ' ' + data.name : ''} [${data.exchange}] (${iv})`;
     const up = data.chg >= 0;
     const tag = document.getElementById('currentPriceTag');
     tag.style.color = up ? '#C0392B' : '#1E7E5A';
@@ -2121,8 +2121,8 @@ function drawPayoff(built, res) {
      hovertemplate:'到期價 $%{x:.2f}<br>損益 %{y:,.0f}<extra></extra>'}
   ], {
     paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)', font:{color:txt, size:11}, margin:{l:48, r:8, t:6, b:24},
-    xaxis:{gridcolor:grid, tickprefix:'$'}, yaxis:{gridcolor:grid, zeroline:true, zerolinecolor:'#94a3b8'}, shapes, showlegend:false
-  }, {responsive:true, displayModeBar:false});
+    xaxis:{gridcolor:grid, tickprefix:'$', fixedrange:true}, yaxis:{gridcolor:grid, zeroline:true, zerolinecolor:'#94a3b8', fixedrange:true}, shapes, showlegend:false, dragmode:false
+  }, {responsive:true, displayModeBar:false, scrollZoom:false, doubleClick:false});
 }
 let lastBuilt = null, lastAnalysis = null;
 async function recompute() {
