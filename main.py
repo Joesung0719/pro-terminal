@@ -5,6 +5,7 @@ import time
 import hmac
 import threading
 import datetime
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -42,14 +43,24 @@ ADMIN_PUSH_PIN = os.environ.get("ADMIN_PUSH_PIN", "").strip()
 
 
 # ==============================================================================
-# 工具：快取、時區、輸入驗證、JSON 安全數值清洗 (徹底杜絕 HTTP 500)
+# 工具：快取、時區、輸入驗證、JSON 安全數值清洗
 # ==============================================================================
 _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 
 
+def _is_valid_cache_val(val) -> bool:
+    """安全判斷快取結果是否非空（修正 Pandas DataFrame 無法直接 bool(df) 的致命 500 Bug）"""
+    if val is None:
+        return False
+    if isinstance(val, (pd.DataFrame, pd.Series)):
+        return not val.empty
+    if isinstance(val, (dict, list, tuple, set, str)):
+        return len(val) > 0
+    return True
+
+
 def cached(key, ttl, fn, cache_empty=False):
-    """簡易 TTL 快取。失敗(例外)與空結果預設不快取。"""
     now = time.time()
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
@@ -59,7 +70,7 @@ def cached(key, ttl, fn, cache_empty=False):
         val = fn()
     except Exception:
         val = None
-    if cache_empty or val:
+    if cache_empty or _is_valid_cache_val(val):
         with _CACHE_LOCK:
             _CACHE[key] = (now, val)
             if len(_CACHE) > 500:
@@ -116,9 +127,14 @@ def clean_symbol(s: str) -> str:
 
 
 def _f(x, default=0.0):
-    """安全轉浮點數，完全阻擋 NaN 與 Inf 導致的 JSON HTTP 500 崩潰"""
     try:
-        if x is None or pd.isna(x):
+        if x is None:
+            return default
+        if isinstance(x, (pd.Series, np.ndarray)):
+            if len(x) == 0:
+                return default
+            x = x.iloc[-1] if isinstance(x, pd.Series) else x[-1]
+        if pd.isna(x):
             return default
         v = float(x)
         return default if (math.isnan(v) or math.isinf(v)) else v
@@ -128,7 +144,13 @@ def _f(x, default=0.0):
 
 def _safe_round(x, nd=2, default=None):
     try:
-        if x is None or pd.isna(x):
+        if x is None:
+            return default
+        if isinstance(x, (pd.Series, np.ndarray)):
+            if len(x) == 0:
+                return default
+            x = x.iloc[-1] if isinstance(x, pd.Series) else x[-1]
+        if pd.isna(x):
             return default
         v = float(x)
         if math.isnan(v) or math.isinf(v):
@@ -233,12 +255,13 @@ INTERVAL_UNIT = {"1d": "日", "1wk": "週", "1mo": "月"}
 
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """確保單層欄位並移除時區，防止新版 yfinance MultiIndex 引發 500 錯誤"""
     if df is None or df.empty:
         return pd.DataFrame()
     d = df.copy()
     if isinstance(d.columns, pd.MultiIndex):
         d.columns = d.columns.get_level_values(0)
+    # 防止重複欄位名稱導致 d["Close"] 變成 DataFrame
+    d = d.loc[:, ~d.columns.duplicated()]
     if getattr(d.index, "tz", None) is not None:
         d.index = d.index.tz_localize(None)
     if "Close" not in d.columns:
@@ -249,16 +272,20 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
-    c = d["Close"].astype(float)
+    c = pd.to_numeric(d["Close"], errors="coerce")
+    h = pd.to_numeric(d["High"], errors="coerce")
+    lo = pd.to_numeric(d["Low"], errors="coerce")
+    vol = pd.to_numeric(d["Volume"], errors="coerce").fillna(0.0)
+
     for p in (5, 10, 20, 60, 120, 240):
         d[f"MA{p}"] = c.rolling(p, min_periods=1).mean()
     std20 = c.rolling(20, min_periods=5).std(ddof=0).fillna(0.0)
     d["BB_UP"] = d["MA20"] + 2.0 * std20
     d["BB_LOW"] = d["MA20"] - 2.0 * std20
-    d["Vol_MA5"] = d["Volume"].astype(float).shift(1).rolling(5, min_periods=1).mean()
+    d["Vol_MA5"] = vol.shift(1).rolling(5, min_periods=1).mean()
 
-    low9 = d["Low"].astype(float).rolling(9, min_periods=1).min()
-    high9 = d["High"].astype(float).rolling(9, min_periods=1).max()
+    low9 = lo.rolling(9, min_periods=1).min()
+    high9 = h.rolling(9, min_periods=1).max()
     denom = (high9 - low9).replace(0, np.nan)
     rsv = ((c - low9) / denom * 100.0).replace([np.inf, -np.inf], np.nan).fillna(50.0)
     k_vals, d_vals = [], []
@@ -321,7 +348,6 @@ def quality_badge(mode: str, spot: float, neck: float, ma20) -> tuple:
 
 
 def _series(s: pd.Series, nd=2):
-    """將 Series 安全轉為 JSON 相容 list，徹底過濾 NaN / Inf"""
     out = []
     for v in s.values:
         out.append(_safe_round(v, nd, None))
@@ -329,7 +355,7 @@ def _series(s: pd.Series, nd=2):
 
 
 # ==============================================================================
-# 全市場日K批次下載（具備單檔退避機制，防止批次結構差異造成 500）
+# 全市場日K批次下載
 # ==============================================================================
 def _split_download(raw, symbols):
     out = {}
@@ -476,10 +502,9 @@ def run_screener(sector: str = "ALL", mode: str = "LONG", neck_days: int = 20, v
     results, failed = [], 0
     for item in pool:
         df = data.get(item["symbol"])
-        if df is None:
-            # 若批次下載漏掉，嘗試單檔補抓
+        if df is None or df.empty:
             df = fetch_history(item["symbol"], "1d")
-        if df is None:
+        if df is None or df.empty:
             failed += 1
             continue
         r = screen_one(df, mode, neck_days, vol_ratio)
@@ -520,20 +545,25 @@ def _name_for(symbol: str):
 
 @app.get("/api/quote/{symbol}")
 def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_days: int = 20):
-    sym = clean_symbol(symbol)
-    if interval not in HISTORY_PLAN:
-        interval = "1d"
-    mode = "SHORT" if mode == "SHORT" else "LONG"
-    neck_days = max(5, min(60, int(neck_days)))
-
-    raw = fetch_history(sym, interval)
-    if raw is None or len(raw) < 3:
-        raise HTTPException(status_code=404, detail="查無此代號或暫時無法取得資料")
-
     try:
+        sym = clean_symbol(symbol)
+        if interval not in HISTORY_PLAN:
+            interval = "1d"
+        mode = "SHORT" if mode == "SHORT" else "LONG"
+        neck_days = max(5, min(60, int(neck_days)))
+
+        raw = fetch_history(sym, interval)
+        # 若單檔抓取偶發空值，且為日K，自動從全市場批次快取備援讀取
+        if (raw is None or len(raw) < 3) and interval == "1d":
+            uni_data = load_universe_daily()
+            raw = uni_data.get(sym)
+
+        if raw is None or len(raw) < 3:
+            raise HTTPException(status_code=404, detail=f"查無 {sym} 資料或 Yahoo 暫時無回應")
+
         df = add_indicators(raw)
-        spot = _f(round(float(df["Close"].iloc[-1]), 2), 0.0)
-        prev_spot = _f(round(float(df["Close"].iloc[-2]), 2), spot)
+        spot = _f(round(_f(df["Close"].iloc[-1]), 2), 0.0)
+        prev_spot = _f(round(_f(df["Close"].iloc[-2], spot), 2), spot)
         chg = _f(round(spot - prev_spot, 2), 0.0)
         pct = _f(round(chg / prev_spot * 100.0, 2), 0.0) if prev_spot > 0 else 0.0
 
@@ -548,10 +578,10 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
         name_str, exchange_str = _name_for(sym)
 
         return {
-            "symbol": sym, "name": name_str, "exchange": exchange_str,
+            "symbol": sym, "name": str(name_str), "exchange": str(exchange_str),
             "interval": interval, "mode": mode,
             "spot": spot, "chg": chg, "pct": pct,
-            "last_date": df.index[-1].strftime("%Y-%m-%d"),
+            "last_date": v.index[-1].strftime("%Y-%m-%d"),
             "ma20_val": ma20_val if ma20_val is not None else spot,
             "ma240_val": ma240_val,
             "neckline": neck,
@@ -569,8 +599,10 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
             "k": _series(v["K"], 1), "d": _series(v["D"], 1),
             "macd_hist": _series(v["MACD_HIST"]), "macd_dif": _series(v["DIF"]), "macd_dea": _series(v["DEA"]),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"資料處理錯誤: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"後端處理異常 ({type(e).__name__}): {str(e)}")
 
 
 @app.get("/api/earnings/{symbol}")
@@ -598,7 +630,7 @@ def get_next_earnings(symbol: str):
         except Exception:
             return {"date": None}
 
-    return cached(("earn", sym), 6 * 3600, _load, cache_empty=True)
+    return cached(("earn", sym), 6 * 3600, _load, cache_empty=True) or {"date": None}
 
 
 # ==============================================================================
@@ -662,7 +694,7 @@ def get_greeks(S: float, K: float, T: float, sigma: float, type: str = "put"):
 
 
 # ==============================================================================
-# LINE 推播（若未設 ADMIN_PUSH_PIN 則直接允許推播，不阻擋使用）
+# LINE 推播
 # ==============================================================================
 STRATEGY_NAMES = {
     "csp": "Short Put (低接收租)", "cc": "Covered Call (現股包租公)",
@@ -699,6 +731,9 @@ def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
     sym = clean_symbol(payload.symbol)
     mode = "SHORT" if payload.mode == "SHORT" else "LONG"
     raw = fetch_history(sym, "1d")
+    if raw is None or len(raw) < 5:
+        uni_data = load_universe_daily()
+        raw = uni_data.get(sym)
     if raw is None or len(raw) < 5:
         raise HTTPException(status_code=502, detail="取得行情失敗，未推播")
     df = add_indicators(raw)
@@ -985,11 +1020,10 @@ select,input{color:var(--text-main);}
       <div class="border-l-2 border-[#38bdf8] pl-3 py-1">
         <div class="font-bold text-base" style="color:var(--text-main)">V9.9 風控強化防彈版 (2026-10-18)</div>
         <ul class="list-disc list-inside mt-1 space-y-0.5">
-          <li>徹底修復 NaN / Inf 浮點數與 MultiIndex 造成的 HTTP 500 錯誤。</li>
+          <li>修復 cached() 判斷 DataFrame 時引發 ValueError 的 HTTP 500 根本原因。</li>
           <li>頸線依多空方向計算（空方用N日最低），並與設定的天數同步到 K 線圖。</li>
           <li>選擇權改為逐腿真實計價：價差、跨式可選第二履約價；Payoff 與損益兩平以真實報價計算。</li>
           <li>新增財報日提醒（財報在到期日前時自動警示）。</li>
-          <li>切換指標/週期時保留已畫的線；主題與字體記憶。</li>
         </ul>
       </div>
     </div>
@@ -1012,7 +1046,7 @@ select,input{color:var(--text-main);}
 <script>
 const isTouch = window.matchMedia('(pointer: coarse)').matches;
 let currentSpot = 0, currentMA20 = 0, currentNeckline = null;
-let currentSymbol = "PLTR", currentInterval = "1d";
+let currentSymbol = "XOM", currentInterval = "1d";
 let currentSector = "ALL", currentRadarMode = "LONG";
 let universeData = [], currentRawData = null;
 let chainCache = {}, currentChain = null, currentExpirations = [];
@@ -1209,6 +1243,7 @@ async function fetchStockData(symbol) {
   document.getElementById('chartTitle').innerText = `${symbol} 載入中...`;
   try {
     const data = await api(`/api/quote/${encodeURIComponent(symbol)}?interval=${currentInterval}&mode=${currentRadarMode}&neck_days=${neckDays()}`);
+    setStatus('', false);
     currentSpot = data.spot; currentMA20 = data.ma20_val; currentNeckline = data.neckline;
     const iv = {'1d':'日K','1wk':'週K','1mo':'月K'}[currentInterval];
     document.getElementById('chartTitle').innerText = `${data.symbol} ${data.name} [${data.exchange}] (${iv})`;
