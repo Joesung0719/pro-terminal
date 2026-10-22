@@ -33,7 +33,7 @@ log = logging.getLogger("us_scheduler")
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_TOKEN", "").strip()
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "").strip()
-APP_URL = os.environ.get("US_APP_URL", "https://pro-terminal.onrender.com")
+APP_URL = os.environ.get("US_APP_URL", "").strip() or "https://pro-terminal.onrender.com"  # GitHub Actions 未設 secret 時會傳入空字串
 
 ET = ZoneInfo("America/New_York")
 TPE = ZoneInfo("Asia/Taipei")
@@ -146,18 +146,37 @@ def download_intraday(symbols):
     return {}
 
 
+# NYSE 休市日（週一至週五的國定假日）。以日曆判斷，不再依賴 Yahoo 回應：
+# 舊版用 yfinance 查 SPY 是否有「今天」的K線，Yahoo 一限流/延遲就回 False，整場推播被靜默略過。
+NYSE_HOLIDAYS = {
+    # 2026
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19",
+    "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+    # 2027
+    "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18",
+    "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+}
+
+
 def market_open_today() -> bool:
-    """以 SPY 最後一根日K是否為今天(美東)判斷今天有沒有開盤；可涵蓋美股國定假日，不需額外套件。"""
-    try:
-        df = yf.Ticker("SPY").history(period="7d")
-        if df is None or df.empty:
-            return False
-        last = df.index[-1]
-        last_date = last.date() if hasattr(last, "date") else pd.Timestamp(last).date()
-        return last_date == datetime.datetime.now(ET).date()
-    except Exception as e:
-        log.warning("無法判斷是否開盤：%s", e)
+    now = datetime.datetime.now(ET)
+    d = now.date().isoformat()
+    if now.weekday() >= 5:
+        log.info("今天(美東 %s)是週末，不推播", d)
         return False
+    if d in NYSE_HOLIDAYS:
+        log.info("今天(美東 %s)是 NYSE 休市日，不推播", d)
+        return False
+    return True
+
+
+def notify_failure(stage: str, err):
+    """推播程式本身出錯時，至少讓你在 LINE 看到「出錯了」，而不是整天沒消息。"""
+    log.error("%s 失敗：%s", stage, err)
+    try:
+        send_line_message(f"⚠️ 美股推播 {stage} 執行失敗：{type(err).__name__} {str(err)[:120]}\n（資料來源 Yahoo 可能暫時限流，請稍後看網頁版：{APP_URL}）")
+    except Exception:
+        pass
 
 
 def index_summary():
@@ -275,7 +294,7 @@ def header_line():
     return f"{dst}｜台北 {now_tp.strftime('%m/%d %H:%M')}／美東 {now_et.strftime('%H:%M')}"
 
 
-def stage1():
+def _stage1():
     """開盤後半小時（美東 10:00）"""
     if not market_open_today():
         log.info("今天美股休市，略過 stage1")
@@ -288,7 +307,7 @@ def stage1():
     )
 
 
-def stage2():
+def _stage2():
     """午盤快報（美東 12:30）：指數 + 核心觀察股較昨收漲跌"""
     if not market_open_today():
         log.info("今天美股休市，略過 stage2")
@@ -303,7 +322,7 @@ def stage2():
     )
 
 
-def stage3():
+def _stage3():
     """收盤結算（美東 16:15）：指數 + 全股票池 多方突破 / 空方破底 名單"""
     if not market_open_today():
         log.info("今天美股休市，略過 stage3")
@@ -323,6 +342,22 @@ def stage3():
         f"👉 {APP_URL}",
     ]
     send_line_message("\n".join(parts))
+
+
+def _safe(fn, label):
+    def run():
+        log.info("開始執行 %s（美東 %s）", label, datetime.datetime.now(ET).strftime("%m/%d %H:%M"))
+        try:
+            fn()
+            log.info("%s 完成", label)
+        except Exception as e:
+            notify_failure(label, e)
+    return run
+
+
+stage1 = _safe(_stage1, "stage1 開盤半小時")
+stage2 = _safe(_stage2, "stage2 午盤")
+stage3 = _safe(_stage3, "stage3 收盤結算")
 
 
 def auto():
