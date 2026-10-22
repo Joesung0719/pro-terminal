@@ -1,0 +1,35 @@
+# 美股 LINE 推播（GitHub Actions 排程）
+# 放在 repo 的 .github/workflows/us_push.yml（與 us_scheduler.py 同一個 repo、同一層）
+# 需要在 repo 的 Settings → Secrets and variables → Actions 新增：
+#   LINE_CHANNEL_TOKEN、LINE_USER_ID（必填）、US_APP_URL（選填，預設 https://pro-terminal.onrender.com）
+# 排程用 UTC。夏令(3月中–11月初)美東=UTC-4、冬令=UTC-5，所以每個時段排兩個 UTC 時間，
+# 由 us_scheduler.py auto 依「美東當下幾點」只執行對的那一個，另一個自動略過。
+name: us-line-push
+
+on:
+  schedule:
+    - cron: "5 14,15 * * 1-5"    # 美東 10:05 附近 → 開盤半小時戰報
+    - cron: "35 16,17 * * 1-5"   # 美東 12:35 附近 → 午盤戰報
+    - cron: "20 20,21 * * 1-5"   # 美東 16:20 附近 → 收盤結算
+  workflow_dispatch:
+    inputs:
+      cmd:
+        description: "手動執行：test / stage1 / stage2 / stage3 / auto"
+        default: "test"
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas numpy yfinance tzdata
+      - name: Run
+        env:
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          US_APP_URL: ${{ secrets.US_APP_URL }}
+        run: python us_scheduler.py ${{ github.event.inputs.cmd || 'auto' }}
