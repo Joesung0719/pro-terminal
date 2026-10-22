@@ -32,4 +32,4 @@ jobs:
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           US_APP_URL: ${{ secrets.US_APP_URL }}
-        run: python us_scheduler.py ${{ github.event.inputs.cmd || 'auto' }}
+        run: python us/us_scheduler.py ${{ github.event.inputs.cmd || 'auto' }}
