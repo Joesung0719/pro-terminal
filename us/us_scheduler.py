@@ -129,7 +129,7 @@ def _flex_header(title, sub):
                                  for c in ("#b22234", "#ffffff", "#b22234", "#ffffff", "#b22234")], height="6px")
     top = _box("horizontal", [
         _box("vertical", [_t(title, "xl", "#ffffff", True), _t(sub, "sm", NAVY_SUB, margin="sm")],
-             flex=3, justifyContent="center"),
+             flex=7, justifyContent="center"),
         _box("vertical", [{"type": "image", "url": IMG_HEADER, "size": "full",
                            "aspectRatio": "3:2", "aspectMode": "fit"}], flex=2, justifyContent="center"),
     ], backgroundColor=NAVY, paddingAll="16px", spacing="md")
@@ -198,7 +198,7 @@ def _section_title(text, color):
 def _flex_bubble(title, body_contents, foot_note):
     watermark = _box("vertical", [{"type": "image", "url": IMG_WATERMARK, "size": "full",
                                    "aspectRatio": "3:2", "aspectMode": "fit"}],
-                     position="absolute", offsetEnd="0px", offsetBottom="40px", width="85%")
+                     position="absolute", offsetEnd="0px", offsetBottom="0px", width="70%")
     return {
         "type": "bubble",
         "size": "giga",
