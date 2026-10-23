@@ -12,9 +12,11 @@
        python us_scheduler.py stage2    # 午盤
        python us_scheduler.py stage3    # 收盤結算
        python us_scheduler.py test      # 只送一則測試訊息
+       python us_scheduler.py flextest  # 送一張白頭海鵰卡片，確認卡片版推播正常
 
 需要的套件：requests pandas numpy yfinance apscheduler tzdata
 需要的環境變數：LINE_CHANNEL_TOKEN、LINE_USER_ID
+選填：ASSET_BASE（海鵰圖片所在的公開網址資料夾，預設為本 repo 的 assets/）
 """
 import os
 import sys
@@ -87,6 +89,152 @@ def send_line_message(message: str) -> bool:
             log.error("LINE 推播失敗：%s", e)
             ok_all = False
     return ok_all
+
+
+# ------------------------------------------------------------------------------
+# LINE Flex（卡片式戰報，白頭海鵰主題）
+# 圖片必須是公開 https 網址；預設放在本 repo 的 assets/。
+# repo 改成 Private 後 raw 網址會失效 → 把 assets/ 放到另一個公開 repo，並設定 ASSET_BASE。
+# ------------------------------------------------------------------------------
+ASSET_BASE = (os.environ.get("ASSET_BASE", "").strip()
+              or "https://raw.githubusercontent.com/Joesung0719/pro-terminal/main/assets").rstrip("/")
+IMG_HEADER = f"{ASSET_BASE}/eagle_header.png"
+IMG_WATERMARK = f"{ASSET_BASE}/eagle_watermark.png"
+
+NAVY, NAVY_SUB, PAGE_BG, CARD_LINE = "#0b2a52", "#b9cdea", "#eef3fa", "#cddbef"
+UP, DOWN, MUTED, INFO = "#1f7a3a", "#c0281e", "#5f5e5a", "#185fa5"   # 美股慣例：綠漲紅跌
+
+
+def _t(text, size="md", color="#1a1a1a", bold=False, **kw):
+    d = {"type": "text", "text": str(text), "size": size, "color": color, "wrap": True}
+    if bold:
+        d["weight"] = "bold"
+    d.update(kw)
+    return d
+
+
+def _box(layout, contents, **kw):
+    d = {"type": "box", "layout": layout, "contents": contents}
+    d.update(kw)
+    return d
+
+
+def _card(contents, **kw):
+    return _box("vertical", contents, backgroundColor="#ffffff", cornerRadius="12px",
+                borderWidth="1px", borderColor=CARD_LINE, paddingAll="14px", **kw)
+
+
+def _flex_header(title, sub):
+    stripe = _box("horizontal", [_box("vertical", [], flex=1, backgroundColor=c)
+                                 for c in ("#b22234", "#ffffff", "#b22234", "#ffffff", "#b22234")], height="6px")
+    top = _box("horizontal", [
+        _box("vertical", [_t(title, "xl", "#ffffff", True), _t(sub, "sm", NAVY_SUB, margin="sm")],
+             flex=3, justifyContent="center"),
+        _box("vertical", [{"type": "image", "url": IMG_HEADER, "size": "full",
+                           "aspectRatio": "3:2", "aspectMode": "fit"}], flex=2, justifyContent="center"),
+    ], backgroundColor=NAVY, paddingAll="16px", spacing="md")
+    return _box("vertical", [top, stripe], paddingAll="0px")
+
+
+def _flex_index_card(idx_rows, vix):
+    rows = []
+    for r in idx_rows:
+        if r.get("pct") is None:
+            rows.append(_box("horizontal", [_t(r["label"], "lg", NAVY, flex=3), _t("暫無資料", "md", MUTED, flex=2, align="end")]))
+            continue
+        color = UP if r["pct"] >= 0 else DOWN
+        arrow = "▲" if r["pct"] >= 0 else "▼"
+        rows.append(_box("horizontal", [
+            _t(f"{r['label']} {r['close']:,.0f}", "lg", NAVY, flex=3),
+            _t(f"{arrow}{abs(r['pct']):.2f}%", "lg", color, True, flex=2, align="end"),
+        ]))
+    if vix:
+        rows.append(_box("horizontal", [_t(f"VIX {vix['value']:.2f}", "lg", NAVY, flex=3),
+                                        _t(vix["state"], "md", MUTED, flex=2, align="end")]))
+    return _card(rows, spacing="sm")
+
+
+def _flex_pick_card(r, mode):
+    accent = UP if mode == "LONG" else DOWN
+    pct_color = UP if r["pct"] >= 0 else DOWN
+    arrow = "▲" if r["pct"] >= 0 else "▼"
+    tag = "首日" if r["first"] else "延續"
+    body = [
+        _box("horizontal", [
+            _t(f"{r['symbol']} {NAME.get(r['symbol'], '')}", "lg", NAVY, True, flex=5),
+            _t(f"${r['price']:.2f} {arrow}{abs(r['pct']):.1f}%", "lg", pct_color, True, flex=5, align="end"),
+        ]),
+        _t(f"{tag}｜量比 {r['ratio']:.1f}x｜距{'頸線' if mode == 'LONG' else '跌破線'} {r['dist']:+.1f}%",
+           "md", INFO, margin="sm"),
+    ]
+    if r["dist"] > 5:
+        body.append(_t("⚠️ 距離偏遠，追價風險高", "md", "#a8650a", margin="xs"))
+    body.append(_t(f"停損參考：${r['neck']:.2f} ／ 月線 ${r['ma20']:.2f}", "md", "#444444", margin="xs"))
+    return _box("horizontal", [
+        _box("vertical", [], width="6px", backgroundColor=accent),
+        _box("vertical", body, flex=1, paddingAll="12px"),
+    ], backgroundColor="#ffffff", cornerRadius="12px", borderWidth="1px", borderColor=CARD_LINE)
+
+
+def _flex_mover_card(r):
+    color = UP if r["vs_prev"] >= 0 else DOWN
+    arrow = "▲" if r["vs_prev"] >= 0 else "▼"
+    return _box("horizontal", [
+        _box("vertical", [], width="6px", backgroundColor=color),
+        _box("vertical", [
+            _box("horizontal", [
+                _t(f"{r['symbol']} {NAME.get(r['symbol'], '')}", "lg", NAVY, True, flex=5),
+                _t(f"${r['last']:.2f} {arrow}{abs(r['vs_prev']):.1f}%", "lg", color, True, flex=5, align="end"),
+            ]),
+            _t(f"較昨收 {r['vs_prev']:+.1f}%｜較今開 {r['vs_open']:+.1f}%", "md", INFO, margin="sm"),
+        ], flex=1, paddingAll="12px"),
+    ], backgroundColor="#ffffff", cornerRadius="12px", borderWidth="1px", borderColor=CARD_LINE)
+
+
+def _section_title(text, color):
+    return _t(text, "lg", color, True, margin="xl")
+
+
+def _flex_bubble(title, body_contents, foot_note):
+    watermark = _box("vertical", [{"type": "image", "url": IMG_WATERMARK, "size": "full",
+                                   "aspectRatio": "3:2", "aspectMode": "fit"}],
+                     position="absolute", offsetEnd="0px", offsetBottom="40px", width="85%")
+    return {
+        "type": "bubble",
+        "size": "giga",
+        "header": _flex_header(title, header_line()),
+        "body": _box("vertical", [watermark] + body_contents,
+                     backgroundColor=PAGE_BG, paddingAll="14px", spacing="md"),
+        "footer": _box("vertical", [
+            {"type": "button", "style": "primary", "color": NAVY, "height": "md",
+             "action": {"type": "uri", "label": "打開美股戰情室", "uri": APP_URL}},
+            _t(foot_note, "sm", MUTED, align="center", margin="md"),
+        ], backgroundColor=PAGE_BG, paddingAll="14px"),
+        "styles": {"header": {"backgroundColor": NAVY}},
+    }
+
+
+def send_line_flex(alt_text: str, bubble: dict, fallback_text: str) -> bool:
+    """送 Flex 卡片；失敗（格式錯誤、圖片網址失效等）就自動改送原本的純文字版，確保一定收得到。"""
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
+        import json
+        log.warning("未設定 LINE 憑證，Flex JSON 約 %d bytes：\n%s", len(json.dumps(bubble, ensure_ascii=False).encode()),
+                    json.dumps(bubble, ensure_ascii=False)[:2000])
+        return False
+    try:
+        r = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"},
+            json={"to": LINE_USER_ID, "messages": [{"type": "flex", "altText": alt_text[:400], "contents": bubble}]},
+            timeout=10,
+        )
+        log.info("LINE Flex 回應 %s %s", r.status_code, r.text[:300])
+        if r.status_code == 200:
+            return True
+    except Exception as e:
+        log.error("LINE Flex 推播失敗：%s", e)
+    log.warning("Flex 失敗，改送純文字版")
+    return send_line_message(fallback_text)
 
 
 # ------------------------------------------------------------------------------
@@ -179,25 +327,34 @@ def notify_failure(stage: str, err):
         pass
 
 
-def index_summary():
+def index_data():
+    """回傳 (指數列, VIX)；抓不到的指數 pct=None，不捏造數字。"""
     items = [("道瓊", "^DJI"), ("那指", "^IXIC"), ("費半", "^SOX"), ("標普", "^GSPC")]
-    lines = []
+    rows = []
     for label, sym in items:
         try:
             df = yf.Ticker(sym).history(period="7d").dropna(subset=["Close"])
             c, p = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
-            pct = (c / p - 1) * 100
-            lines.append(f"{'▲' if pct >= 0 else '▼'} {label} {c:,.0f} ({pct:+.2f}%)")
+            rows.append({"label": label, "close": c, "pct": (c / p - 1) * 100})
         except Exception:
-            lines.append(f"· {label} 暫無資料")
-    vix_line = ""
+            rows.append({"label": label, "close": None, "pct": None})
+    vix = None
     try:
         v = yf.Ticker("^VIX").history(period="7d").dropna(subset=["Close"])
         c = float(v["Close"].iloc[-1])
         st = "極度恐慌" if c >= 30 else ("恐慌警戒" if c >= 20 else ("正常平穩" if c >= 15 else "樂觀偏低"))
-        vix_line = f"🔥 VIX {c:.2f}（{st}）"
+        vix = {"value": c, "state": st}
     except Exception:
         pass
+    return rows, vix
+
+
+def index_summary(rows=None, vix=None):
+    if rows is None:
+        rows, vix = index_data()
+    lines = [f"{'▲' if r['pct'] >= 0 else '▼'} {r['label']} {r['close']:,.0f} ({r['pct']:+.2f}%)"
+             if r["pct"] is not None else f"· {r['label']} 暫無資料" for r in rows]
+    vix_line = f"🔥 VIX {vix['value']:.2f}（{vix['state']}）" if vix else ""
     return lines, vix_line
 
 
@@ -300,11 +457,16 @@ def _stage1():
         log.info("今天美股休市，略過 stage1")
         return
     rows = intraday_moves(WATCH_CORE)
-    send_line_message(
+    text = (
         f"⚡ 【美股多空雷達 V9.9｜開盤半小時戰報】\n{header_line()}\n"
         f"早盤初段量能已消化，核心觀察股：\n{movers_text(rows)}\n"
         f"━━━━━━━━━━━━━━\n※ 早盤波動大，請避免追價；僅供量化輔助監控。\n👉 {APP_URL}"
     )
+    top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
+    body = [_section_title("核心觀察股（波動最大）", NAVY)]
+    body += [_flex_mover_card(r) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
+    bubble = _flex_bubble("美股多空雷達｜開盤半小時", body, "早盤波動大，避免追價｜僅供量化輔助監控")
+    send_line_flex("美股多空雷達｜開盤半小時戰報", bubble, text)
 
 
 def _stage2():
@@ -312,14 +474,31 @@ def _stage2():
     if not market_open_today():
         log.info("今天美股休市，略過 stage2")
         return
-    idx_lines, vix_line = index_summary()
+    idx_rows, vix = index_data()
+    idx_lines, vix_line = index_summary(idx_rows, vix)
     rows = intraday_moves(WATCH_CORE)
-    send_line_message(
+    text = (
         f"🌙 【美股多空雷達 V9.9｜午盤戰報】\n{header_line()}\n\n"
         + "\n".join(idx_lines) + (f"\n{vix_line}" if vix_line else "")
         + f"\n\n核心觀察股：\n{movers_text(rows)}\n"
         f"━━━━━━━━━━━━━━\n※ 僅供量化輔助監控。\n👉 {APP_URL}"
     )
+    top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
+    body = [_flex_index_card(idx_rows, vix), _section_title("核心觀察股（波動最大）", NAVY)]
+    body += [_flex_mover_card(r) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
+    bubble = _flex_bubble("美股多空雷達｜午盤戰報", body, "僅供量化輔助監控")
+    send_line_flex("美股多空雷達｜午盤戰報", bubble, text)
+
+
+def build_close_bubble(idx_rows, vix, longs, shorts, scanned):
+    body = [_flex_index_card(idx_rows, vix)]
+    body.append(_section_title(f"多方突破  共 {len(longs)} 檔", UP))
+    body += [_flex_pick_card(r, "LONG") for r in longs[:TOP_N]] or [_card([_t("今日無符合條件之多方突破標的", "md", MUTED)])]
+    body.append(_section_title(f"空方破底  共 {len(shorts)} 檔", DOWN))
+    body += [_flex_pick_card(r, "SHORT") for r in shorts[:TOP_N]] or [_card([_t("今日無符合條件之空方破底標的", "md", MUTED)])]
+    body.append(_t(f"已掃描 {scanned}/{len(SYMBOLS)} 檔｜{NECK_DAYS}日頸線、量比≥{VOL_RATIO}x、收紅/黑K、站上/跌破月線",
+                   "sm", MUTED, margin="lg"))
+    return _flex_bubble("美股多空雷達｜收盤戰報", body, "僅為量化條件篩選結果，非投資建議")
 
 
 def _stage3():
@@ -327,7 +506,8 @@ def _stage3():
     if not market_open_today():
         log.info("今天美股休市，略過 stage3")
         return
-    idx_lines, vix_line = index_summary()
+    idx_rows, vix = index_data()
+    idx_lines, vix_line = index_summary(idx_rows, vix)
     longs, scanned = run_screen("LONG")
     shorts, _ = run_screen("SHORT")
     parts = [
@@ -341,7 +521,8 @@ def _stage3():
         "※ 僅為量化條件篩選結果，非投資建議。",
         f"👉 {APP_URL}",
     ]
-    send_line_message("\n".join(parts))
+    bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned)
+    send_line_flex(f"美股多空雷達｜收盤戰報：多方 {len(longs)} 檔／空方 {len(shorts)} 檔", bubble, "\n".join(parts))
 
 
 def _safe(fn, label):
@@ -402,5 +583,13 @@ if __name__ == "__main__":
         stage3()
     elif cmd == "test":
         send_line_message(f"✅ 美股雷達推播測試成功\n{header_line()}")
+    elif cmd == "flextest":
+        # 只抓指數（真實資料），確認卡片版型與海鵰圖片能正常顯示
+        rows, vix = index_data()
+        bubble = _flex_bubble("美股多空雷達｜卡片版測試", [
+            _flex_index_card(rows, vix),
+            _card([_t("看到白頭海鵰和這張卡片，代表 Flex 卡片版推播設定成功。", "md", NAVY)]),
+        ], "測試訊息")
+        send_line_flex("美股多空雷達｜卡片版測試", bubble, f"✅ 卡片版測試（Flex 失敗，已改送文字）\n{header_line()}")
     else:
         print(__doc__)
