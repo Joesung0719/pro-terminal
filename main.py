@@ -108,17 +108,41 @@ def tpe_now() -> datetime.datetime:
     return _utc_now().astimezone(datetime.timezone(datetime.timedelta(hours=8)))
 
 
+# NYSE 休市日（與 us/us_scheduler.py 的 NYSE_HOLIDAYS 相同，改一邊要同步改另一邊）
+NYSE_HOLIDAYS = {
+    # 2026
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19",
+    "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+    # 2027
+    "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18",
+    "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+}
+
+# Nasdaq 23/5 夜盤（美東 21:00–04:00）預計 2026/12/6（週日）21:00 起；若官方延期，改這個日期即可。
+# 每日 20:00–21:00 全市場暫停。21:00 之後的成交算「隔天」的交易日（期貨式），假日當晚 21:00 恢復。
+OVERNIGHT_START = datetime.datetime(2026, 12, 6, 21, 0)
+
+
 def us_session_label() -> str:
     n = et_now()
     hm = n.hour * 100 + n.minute
-    if n.weekday() >= 5:
+    # 20:00 之後（暫停＋夜盤）屬於隔天的交易日；週日 21:00 前仍是週末
+    trade_day = n.date() + datetime.timedelta(days=1 if hm >= 2000 else 0)
+    if trade_day.weekday() >= 5 or (n.weekday() == 6 and hm < 2100):
         return "休市(週末)"
+    if trade_day.isoformat() in NYSE_HOLIDAYS:
+        return "休市(假日)"
     if 930 <= hm < 1600:
         return "盤中"
     if 400 <= hm < 930:
         return "盤前"
     if 1600 <= hm < 2000:
         return "盤後"
+    overnight = n.replace(tzinfo=None) >= OVERNIGHT_START
+    if overnight and (hm >= 2100 or hm < 400):
+        return "夜盤"
+    if overnight and 2000 <= hm < 2100:
+        return "暫停"
     return "休市"
 
 
