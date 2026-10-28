@@ -1,0 +1,48 @@
+# 美股出場方式回測：同一批突破／破底訊號，比較固定持有、移動停損 10%、ATR 移動停損等出場方式
+# 手動觸發：Actions → us-exit-backtest → Run workflow；修改回測程式時也會自動跑
+name: us-exit-backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "回測年數"
+        default: "5"
+  push:
+    paths:
+      - "us/us_exit_backtest.py"
+      - "us/exit_sim.py"
+      - ".github/workflows/us_exit_backtest.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: us-exit-backtest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      YEARS: ${{ github.event.inputs.years || '5' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas numpy yfinance tzdata
+      - name: Run exit backtest
+        run: |
+          python us/us_exit_backtest.py
+          cat backtest_reports/us_exit_*.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit reports
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add backtest_reports/
+          git diff --cached --quiet && exit 0
+          git commit -m "Update US exit backtest reports (YEARS=${YEARS}) [skip render]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
