@@ -23,7 +23,7 @@ import yfinance as yf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from us_scheduler import UNIVERSE as WATCHLIST  # noqa: E402
-from exit_sim import atr14, strategies, simulate, report_md  # noqa: E402
+from exit_sim import atr14, ma_flags, market_flag, strategies, simulate, report_md  # noqa: E402
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(BASE, "backtest_reports")
@@ -106,18 +106,25 @@ def main():
         raise SystemExit(f"❌ 只下載到 {len(hist)}/{len(syms)} 檔，資料不完整，不產生報告")
     start_date = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=int(365.25 * YEARS)))
     strats = strategies()
+    index_df = yf.Ticker("SPY").history(period=f"{YEARS + 2}y", auto_adjust=True).dropna(subset=["Close"])
+    if getattr(index_df.index, "tz", None) is not None:
+        index_df.index = index_df.index.tz_localize(None)
     os.makedirs(OUT_DIR, exist_ok=True)
     for mode in ("LONG", "SHORT"):
+        mkt = market_flag(index_df, mode)
         recs = []
         for s, df in hist.items():
             o, h, l, c = (df[k].values for k in ("Open", "High", "Low", "Close"))
             atr = atr14(h, l, c)
+            f_qy, f_all = ma_flags(c, mode)
             for i, neck in signals(df, mode, start_date):
+                m = mkt.asof(df.index[i]) if len(mkt) else np.nan
                 for name, p in strats:
                     r = simulate(i, mode, o, h, l, c, atr, neck, p, COST_PCT)
                     if r is not None:
                         recs.append({"strategy": name, "ret": r[0], "days": r[1], "reason": r[2],
-                                     "year": df.index[i].year})
+                                     "year": df.index[i].year, "f_qy": bool(f_qy[i]), "f_all": bool(f_all[i]),
+                                     "f_mkt": None if pd.isna(m) else bool(m)})
         trades = pd.DataFrame(recs)
         label = "多方突破" if mode == "LONG" else "空方破底"
         n_sig = int((trades["strategy"] == strats[0][0]).sum()) if len(trades) else 0

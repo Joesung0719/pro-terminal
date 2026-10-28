@@ -26,6 +26,31 @@ def atr14(h, l, c):
     return pd.Series(tr).rolling(14, min_periods=14).mean().values
 
 
+def ma_flags(c, mode):
+    """回傳 (季線＋年線都在腳下, 所有均線都在腳下) 兩個布林陣列；空方反過來（均線都在頭上）。"""
+    cs = pd.Series(c)
+    mas = {p: cs.rolling(p, min_periods=p).mean().values for p in (5, 10, 20, 60, 120, 240)}
+    with np.errstate(invalid="ignore"):
+        if mode == "LONG":
+            qy = (c > mas[60]) & (c > mas[240])
+            allv = np.all([c > m for m in mas.values()], axis=0)
+        else:
+            qy = (c < mas[60]) & (c < mas[240])
+            allv = np.all([c < m for m in mas.values()], axis=0)
+    return qy, allv
+
+
+def market_flag(index_df, mode):
+    """大盤（加權指數／SPY）收盤在季線上（空方：季線下），回傳以日期為索引的布林 Series。"""
+    c = index_df["Close"]
+    ma60 = c.rolling(60, min_periods=60).mean()
+    f = (c > ma60) if mode == "LONG" else (c < ma60)
+    return f.where(ma60.notna())
+
+
+FILTER_EXITS = ("固定持有10天（對照）", "移動停損10%", "ATR×3")
+
+
 def strategies():
     """回傳 [(名稱, 參數)]；名稱用於報告。"""
     out = [("固定持有10天（對照）", {"hold": 10})]
@@ -111,10 +136,39 @@ def summarize(trades):
     return main, yearly, reasons
 
 
+def filter_table(trades):
+    filters = [("全部（原條件）", None),
+               ("季線＋年線在腳下", trades["f_qy"]),
+               ("所有均線在腳下", trades["f_all"]),
+               ("大盤在季線上", trades["f_mkt"] == True),  # noqa: E712
+               ("大盤在季線下", trades["f_mkt"] == False),  # noqa: E712
+               ("所有均線在腳下＋大盤在季線上", trades["f_all"] & (trades["f_mkt"] == True))]  # noqa: E712
+    rows = []
+    for fname, mask in filters:
+        sub = trades if mask is None else trades[mask.astype(bool)]
+        for ex in FILTER_EXITS:
+            g = sub[sub["strategy"] == ex]
+            r = g["ret"].values
+            if len(r) == 0:
+                rows.append({"進場濾網": fname, "出場方式": ex, "n": 0})
+                continue
+            win, loss = r[r > 0], r[r <= 0]
+            ym = g.groupby("year")["ret"].mean()
+            rows.append({"進場濾網": fname, "出場方式": ex, "n": len(r),
+                         "勝率%": round((r > 0).mean() * 100, 1), "期望值%": round(r.mean(), 2),
+                         "賺賠比": round(win.mean() / -loss.mean(), 2) if len(win) and len(loss) and loss.mean() < 0 else np.nan,
+                         "最差%": round(r.min(), 1), "賺錢年數": f"{int((ym > 0).sum())}/{len(ym)}"})
+    return pd.DataFrame(rows)
+
+
 def report_md(title_lines, trades):
     main, yearly, reasons = summarize(trades)
     parts = list(title_lines)
     parts += ["\n### 各出場方式比較（每筆交易，已扣成本）\n", "```\n" + main.to_string(index=False) + "\n```",
+              "\n### 加上進場濾網（只看三種出場）\n",
+              "季線＋年線：股價在 60MA 與 240MA 之上；所有均線：在 5/10/20/60/120/240MA 之上；"
+              "大盤：加權指數／SPY 在季線之上。空方全部反過來。\n",
+              "```\n" + filter_table(trades).to_string(index=False) + "\n```",
               "\n### 各年度期望值（看是否穩定，不是只靠某一年）\n", "```\n" + yearly.to_string() + "\n```",
               "\n### 出場原因占比\n", "```\n" + reasons.to_string() + "\n```",
               "\n## 怎麼解讀",
