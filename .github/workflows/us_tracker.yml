@@ -1,0 +1,41 @@
+# 美股突破／破底追蹤名單：每個交易日收盤後記錄當天訊號、更新舊訊號的 3/5/7 日表現
+# 排程用 UTC：21:30 UTC ＝ 美東夏令 17:30／冬令 16:30，兩者都已收盤
+# 休市日（週末、NYSE 假日、SPY 沒有當天K棒）只更新舊紀錄，不新增
+name: us-signal-tracker
+
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: us-signal-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas numpy yfinance tzdata
+      - name: Record and update signals
+        run: |
+          python us/us_signal_tracker.py
+          cat tracking/us_summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit tracking data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add tracking/
+          git diff --cached --quiet && exit 0
+          # [skip render]：只是資料更新，不觸發 Render 重新部署（網頁直接讀 GitHub 上的最新檔）
+          git commit -m "Update US signal tracking ($(TZ=America/New_York date +%F)) [skip render]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
