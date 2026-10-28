@@ -1222,6 +1222,62 @@ class PushPayload(BaseModel):
     summary: str = Field(default="", max_length=500)
 
 
+# ==============================================================================
+# 突破／破底追蹤名單（us/us_signal_tracker.py 每日收盤後寫入 tracking/us_signals.csv）
+#   先讀 GitHub 上的最新檔（每天更新不必重新部署），讀不到再用本機檔；都沒有就回傳「暫無資料」
+# ==============================================================================
+TRACK_URL = os.environ.get("TRACK_URL", "").strip() or \
+    "https://raw.githubusercontent.com/Joesung0719/pro-terminal/main/tracking/us_signals.csv"
+TRACK_FILE = os.path.join(_BASE_DIR, "tracking", "us_signals.csv")
+TRACK_MIN_N = 30
+
+
+def _load_tracking():
+    import io
+    try:
+        r = requests.get(TRACK_URL, timeout=10)
+        if r.status_code == 200 and r.text.strip():
+            return pd.read_csv(io.StringIO(r.content.decode("utf-8-sig")), dtype={"symbol": str})
+    except Exception:
+        pass
+    if os.path.exists(TRACK_FILE):
+        return pd.read_csv(TRACK_FILE, dtype={"symbol": str}, encoding="utf-8-sig")
+    return None
+
+
+@app.get("/api/tracking")
+def get_tracking(mode: str = "LONG"):
+    mode = "SHORT" if mode == "SHORT" else "LONG"
+    try:
+        df = cached(("tracking",), 600, _load_tracking)
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        return {"ok": False, "mode": mode}
+    g = df[df["mode"] == mode]
+    stats = []
+    for h in (3, 5, 7):
+        a = pd.to_numeric(g[f"r{h}"], errors="coerce").dropna()
+        ex = pd.to_numeric(g[f"ex{h}"], errors="coerce").dropna()
+        n = len(a)
+        stats.append({"h": h, "n": n, "enough": n >= TRACK_MIN_N,
+                      "win": _safe_round((a > 0).mean() * 100, 0) if n else None,
+                      "avg": _safe_round(a.mean()) if n else None,
+                      "median": _safe_round(a.median()) if n else None,
+                      "excess": _safe_round(ex.mean()) if len(ex) else None,
+                      "beat": _safe_round((ex > 0).mean() * 100, 0) if len(ex) else None})
+    fin = g[g["fail_neck"].astype(str).isin(["True", "False"])]
+    fail = _safe_round((fin["fail_neck"].astype(str) == "True").mean() * 100, 0) if len(fin) else None
+    live = g[pd.to_numeric(g["days_done"], errors="coerce").fillna(0) < 7].sort_values("date", ascending=False)
+    live_rows = [{"symbol": r["symbol"], "name": r["name"], "date": r["date"],
+                  "days": int(pd.to_numeric(r["days_done"], errors="coerce") or 0),
+                  "r_last": _safe_round(pd.to_numeric(r["r_last"], errors="coerce")),
+                  "fail": str(r["fail_neck"]) == "True"} for _, r in live.head(60).iterrows()]
+    return {"ok": True, "mode": mode, "start": str(df["date"].min()), "total": int(len(g)),
+            "days": int(g["date"].nunique()), "stats": stats, "fail_rate": fail, "fail_n": int(len(fin)),
+            "live": live_rows}
+
+
 @app.post("/api/line/push")
 def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
     if not ADMIN_PUSH_PIN:
@@ -1408,10 +1464,11 @@ select,input{color:var(--text-main);}
 <div id="mainLayout" class="flex flex-1 overflow-hidden">
   <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
     <div class="p-3 border-b border-theme space-y-2">
-      <div class="grid grid-cols-3 gap-1 text-xs font-bold">
+      <div class="grid grid-cols-4 gap-1 text-xs font-bold">
         <button id="tab_break" onclick="setListTab('break')" class="py-1.5 rounded bg-[#234E70] text-white">🚀 突破榜</button>
         <button id="tab_high" onclick="setListTab('high')" class="py-1.5 rounded bg-input text-muted">🏔️ 52週新高</button>
         <button id="tab_low" onclick="setListTab('low')" class="py-1.5 rounded bg-input text-muted">🕳️ 52週新低</button>
+        <button id="tab_track" onclick="setListTab('track')" class="py-1.5 rounded bg-input text-muted">📊 追蹤</button>
       </div>
       <div id="breakModeBox">
         <label class="text-xs text-muted font-bold block mb-1">🎯 選股多空方向：</label>
@@ -1748,10 +1805,10 @@ async function fetchIndicesData() {
 
 function setListTab(tab) {
   listTab = tab;
-  [['break','tab_break'],['high','tab_high'],['low','tab_low']].forEach(([k, id]) => {
+  [['break','tab_break'],['high','tab_high'],['low','tab_low'],['track','tab_track']].forEach(([k, id]) => {
     document.getElementById(id).className = 'py-1.5 rounded ' + (k === tab ? 'bg-[#234E70] text-white' : 'bg-input text-muted');
   });
-  document.getElementById('breakModeBox').classList.toggle('hidden', tab !== 'break');
+  document.getElementById('breakModeBox').classList.toggle('hidden', tab !== 'break' && tab !== 'track');
   loadScreenerList();
 }
 
@@ -1798,6 +1855,10 @@ async function loadWeek52List() {
 async function loadScreenerList() {
   const note = document.getElementById('screenerNote');
   note.textContent = '掃描中...';
+  if (listTab === 'track') {
+    try { await loadTrackingList(); } catch (e) { note.textContent = ''; setStatus('追蹤名單載入失敗：' + e.message, true); }
+    return;
+  }
   if (listTab !== 'break') {
     try { await loadWeek52List(); } catch (e) { note.textContent = ''; setStatus('52週榜單載入失敗：' + e.message, true); }
     return;
@@ -1814,6 +1875,37 @@ async function loadScreenerList() {
     scheduleUniRetry(data.universe);
     renderWatchlist();
   } catch (e) { note.textContent = ''; setStatus('篩選失敗：' + e.message, true); }
+}
+
+// 突破／破底追蹤名單：美股綠漲紅跌；沒有資料一律顯示「—」
+const trkPct = v => v == null ? '—' : `<b style="color:${v > 0 ? '#1E7E5A' : (v < 0 ? '#C0392B' : 'inherit')}">${v > 0 ? '+' : ''}${v.toFixed(2)}%</b>`;
+async function loadTrackingList() {
+  const note = document.getElementById('screenerNote');
+  const box = document.getElementById('watchlist');
+  const d = await api(`/api/tracking?mode=${currentRadarMode}`);
+  universeData = [];
+  const label = currentRadarMode === 'LONG' ? '多方突破' : '空方破底';
+  if (!d.ok) {
+    note.textContent = '';
+    box.innerHTML = '<div class="p-4 text-center text-sm text-muted">暫無資料：追蹤名單從每個交易日收盤後開始累積，至少需要 2～3 個月才有參考價值。</div>';
+    return;
+  }
+  note.textContent = `追蹤起始 ${d.start}｜${label} ${d.total} 筆、${d.days} 個交易日｜隔日開盤進場、扣成本、超額報酬＝減去 SPY 同期間${currentRadarMode === 'SHORT' ? '（空方取反向）' : ''}`;
+  const cards = d.stats.map(s => `
+    <div class="px-3 py-2 rounded-lg bg-input border border-theme">
+      <div class="flex justify-between font-black text-base"><span>持有 ${s.h} 天</span><span>勝率 ${s.win == null ? '—' : s.win + '%'}</span></div>
+      <div class="text-sm mt-0.5">平均 ${trkPct(s.avg)}｜中位數 ${trkPct(s.median)}</div>
+      <div class="text-sm">超額 ${trkPct(s.excess)}｜贏大盤 <b>${s.beat == null ? '—' : s.beat + '%'}</b></div>
+      <div class="text-xs text-muted">已完成 ${s.n} 筆${s.enough ? '' : '<span class="text-amber-500">｜⚠️ 樣本不足，僅供觀察</span>'}</div>
+    </div>`).join('');
+  const fail = `<div class="px-3 py-1.5 text-sm font-bold">${currentRadarMode === 'LONG' ? '假突破' : '假跌破'}率（7日內收盤回到頸線另一側）：${d.fail_rate == null ? '—' : d.fail_rate + '%（' + d.fail_n + ' 筆）'}</div>`;
+  const live = d.live.length ? d.live.map(r => `
+    <div class="px-3 py-1.5 rounded-lg bg-input border border-theme cursor-pointer hover:opacity-80" onclick="fetchStockData('${esc(r.symbol)}')">
+      <div class="flex justify-between font-bold text-sm"><span>${esc(r.symbol)} <span class="text-xs text-muted">${r.name && r.name !== r.symbol ? esc(r.name) : ''}</span></span><span>${trkPct(r.r_last)}</span></div>
+      <div class="text-xs text-muted flex justify-between"><span>訊號 ${esc(String(r.date).slice(5))}｜第 ${r.days}/7 天</span><span>${r.fail ? '<span class="text-amber-500">⚠️已回頸線</span>' : ''}</span></div>
+    </div>`).join('') : '<div class="p-2 text-center text-sm text-muted">暫無資料</div>';
+  box.innerHTML = cards + fail + `<div class="px-3 pt-2 font-black text-sm">🔄 追蹤中（${d.live.length} 檔）</div>` + live +
+    '<div class="px-3 py-2 text-xs text-muted">詳細分組見 GitHub 上的 tracking/us_summary.md</div>';
 }
 
 function renderWatchlist() {
