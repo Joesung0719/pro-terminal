@@ -1147,7 +1147,8 @@ def get_option_expirations(symbol: str):
         msg = ("取得到期日失敗：" + why) if why else "Yahoo 與 Cboe 都沒有此標的的期權合約（可能該標的沒有掛牌期權）"
         return {"expirations": [], "error": msg + f"｜可開 /api/debug/{sym} 查看原因"}
     src = _OPT_SRC.get(sym, "yahoo")
-    return {"expirations": exps, "source": src, "source_label": _SRC_LABEL[src]}
+    r, r_src = risk_free_rate()   # 前端推薦履約價時算 Delta 用
+    return {"expirations": exps, "source": src, "source_label": _SRC_LABEL[src], "r": r, "r_source": r_src}
 
 
 @app.get("/api/options/{symbol}/chain")
@@ -1554,7 +1555,7 @@ select,input{color:var(--text-main);}
       <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
         <div>
           <label class="text-muted block mb-1 text-xs">到期日</label>
-          <select id="expDateSelect" onchange="onExpirationChange()" class="w-full bg-input border border-theme rounded p-2 font-bold"><option value="">載入中...</option></select>
+          <select id="expDateSelect" onchange="userPickExp()" class="w-full bg-input border border-theme rounded p-2 font-bold"><option value="">載入中...</option></select>
         </div>
         <div>
           <label class="text-muted block mb-1 text-xs">策略 (8大主流)</label>
@@ -1586,8 +1587,9 @@ select,input{color:var(--text-main);}
         <div>
           <div class="flex justify-between items-center mb-1">
             <label class="text-muted text-xs" id="strike1Label">履約價 (Strike)</label>
-            <span class="text-xs text-[#38bdf8] cursor-pointer hover:underline" onclick="autoAlignMA20()">🎯 對齊 MA20</span>
+            <span class="text-xs whitespace-nowrap"><span class="text-amber-400 font-bold cursor-pointer hover:underline" onclick="applyReco()">⭐ 推薦</span><span class="text-muted"> ｜ </span><span class="text-[#38bdf8] cursor-pointer hover:underline" onclick="autoAlignMA20()">對齊 MA20</span></span>
           </div>
+          <div id="recoNote" class="text-sm font-bold text-amber-400 leading-snug mb-1 whitespace-pre-line"></div>
           <select id="strikeSelect" onchange="recompute()" class="w-full bg-card border border-theme rounded p-2 font-bold"><option value="">請先選到期日</option></select>
         </div>
         <div id="strike2Wrap" class="hidden">
@@ -2061,6 +2063,10 @@ async function loadEarnings(symbol) {
     nextEarnings = r.date;
     if (r.date) { tag.textContent = '📅 下次財報 ' + r.date; tag.classList.remove('hidden'); }
     checkEarningsVsExpiry();
+    // 財報日會影響推薦到期日：到期日清單已載入就重新標示（使用者沒手動選過才改選）
+    if (expSym === symbol && currentExpirations.length) {
+      if (markExpirations(expAuto)) onExpirationChange(); else if (currentChain) populateStrikes();
+    }
   } catch (e) {}
 }
 function checkEarningsVsExpiry() {
@@ -2090,7 +2096,8 @@ async function loadOptionChain(symbol) {
   document.getElementById('strikeSelect').innerHTML = '<option value="">請先選到期日</option>';
   document.getElementById('chainNote').textContent = '';
   document.getElementById('retryChainBtn').classList.add('hidden');
-  currentChain = null; chainCache = {};
+  currentChain = null; chainCache = {}; currentExpirations = []; lastStrikeReco = null;
+  document.getElementById('recoNote').textContent = '';
   document.getElementById('chainSrc').textContent = '';
   document.getElementById('chainDte').textContent = '';
   try {
@@ -2103,11 +2110,12 @@ async function loadOptionChain(symbol) {
       document.getElementById('retryChainBtn').classList.remove('hidden');
       return;
     }
-    expSel.innerHTML = currentExpirations.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+    expSym = symbol; expAuto = true;
+    optRate = (typeof r.r === 'number') ? r.r : null;
     document.getElementById('chainSrc').textContent = r.source_label ? '期權資料來源：' + r.source_label : '';
-    // 預設選距今 ≥21 天的第一個到期日（避免一打開就選到明天到期的合約）；沒有就用第一個
-    const dteOf = e => (new Date(e + 'T21:00:00Z') - Date.now()) / 86400000;
-    const pick = currentExpirations.find(e => dteOf(e) >= 21) || currentExpirations[0];
+    // 預設選策略推薦的到期日（⭐）；沒有推薦就選距今 ≥21 天的第一個，再沒有就用第一個
+    markExpirations(false);
+    const pick = lastExpReco.best || currentExpirations.find(e => dteOf(e) >= 21) || currentExpirations[0];
     expSel.value = pick;
     onExpirationChange();
   } catch (e) {
@@ -2126,6 +2134,7 @@ async function onExpirationChange() {
   try {
     const key = currentSymbol + '|' + exp;
     if (!chainCache[key]) chainCache[key] = await api(`/api/options/${encodeURIComponent(currentSymbol)}/chain?exp=${exp}&spot=${currentSpot}`);
+    if (document.getElementById('expDateSelect').value !== exp || !key.startsWith(currentSymbol + '|')) return;   // 載入期間已換到期日或標的
     currentChain = chainCache[key];
     note.textContent = '';
     const dd = Math.max(0, Math.ceil((new Date(exp + 'T21:00:00Z') - Date.now()) / 86400000));
@@ -2137,7 +2146,156 @@ async function onExpirationChange() {
     document.getElementById('retryChainBtn').classList.remove('hidden');
   }
 }
-function onStrategyChange() { if (currentChain) populateStrikes(); }
+function userPickExp() { expAuto = false; onExpirationChange(); }
+function onStrategyChange() {
+  // 換策略：到期日改選該策略的推薦（⭐），使用者之後仍可自行改選
+  expAuto = true;
+  if (currentExpirations.length && markExpirations(true)) onExpirationChange();
+  else if (currentChain) populateStrikes();
+}
+
+/* ---------- 自動推薦：到期日（DTE）＋履約價（Delta）＋流動性過濾 ----------
+   只用真實報價（IV、Bid/Ask、OI）計算；缺 IV 就算不出 Delta，該檔不推薦。 */
+const RECO = {
+  csp:       {dte:[30, 45], d1:[0.20, 0.30], sell:true},
+  cc:        {dte:[30, 45], d1:[0.20, 0.30], sell:true},
+  bull_put:  {dte:[30, 45], d1:[0.25, 0.30], d2:[0.10, 0.20], sell:true},
+  long_call: {dte:[45, 90], d1:[0.60, 0.70]},
+  long_put:  {dte:[45, 90], d1:[0.60, 0.70]},
+  bull_call: {dte:[30, 60], d1:[0.50, 0.60], d2:[0.25, 0.35]},
+  bear_put:  {dte:[30, 60], d1:[0.50, 0.60], d2:[0.25, 0.35]},
+  straddle:  {dte:[30, 45], atm:true, earnings:true}
+};
+const RECO_MIN_OI = 100, RECO_MAX_SPREAD_PCT = 10;
+let optRate = null, expAuto = true, expSym = null, lastExpReco = {best: null, ok: new Set(), why: ''}, lastStrikeReco = null;
+function dteOf(e) { return (new Date(e + 'T21:00:00Z') - Date.now()) / 86400000; }
+function recoExpiries() {
+  const R = RECO[stratKey()], out = {best: null, ok: new Set(), why: ''};
+  const list = currentExpirations.map(e => ({e, d: dteOf(e)}));
+  if (R.earnings && nextEarnings) {
+    // 跨式買的是財報波動：選第一個「財報日之後」到期的合約
+    const hit = list.find(x => x.e > nextEarnings);
+    if (hit && hit.d <= 90) { out.best = hit.e; out.ok.add(hit.e); out.why = `涵蓋財報日 ${nextEarnings}`; return out; }
+  }
+  const inR = list.filter(x => x.d >= R.dte[0] && x.d <= R.dte[1]);
+  inR.forEach(x => out.ok.add(x.e));
+  let pool = inR;
+  if (R.sell && nextEarnings && inR.length) {
+    const pre = inR.filter(x => x.e < nextEarnings);
+    if (pre.length) pool = pre; else out.why = `⚠️ ${R.dte[0]}–${R.dte[1]} 天的到期日都跨過財報 ${nextEarnings}`;
+  }
+  if (!pool.length) { out.why = `— 沒有 ${R.dte[0]}–${R.dte[1]} 天的到期日`; return out; }
+  const mid = (R.dte[0] + R.dte[1]) / 2;
+  out.best = pool.reduce((a, b) => Math.abs(b.d - mid) < Math.abs(a.d - mid) ? b : a).e;
+  return out;
+}
+function markExpirations(reselect) {
+  // 到期日清單：⭐ 最推薦、🎯 符合天數範圍；回傳是否改選了到期日
+  const sel = document.getElementById('expDateSelect');
+  if (!currentExpirations.length) return false;
+  const rec = recoExpiries(); lastExpReco = rec;
+  const cur = sel.value;
+  sel.innerHTML = currentExpirations.map(e => {
+    const m = e === rec.best ? '⭐ ' : (rec.ok.has(e) ? '🎯 ' : '');
+    return `<option value="${esc(e)}">${m}${esc(e)}（${Math.max(0, Math.ceil(dteOf(e)))}天）</option>`;
+  }).join('');
+  if (cur) sel.value = cur;
+  if (reselect && rec.best && rec.best !== cur) { sel.value = rec.best; return true; }
+  return false;
+}
+function _erf(x) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return x >= 0 ? y : -y;
+}
+function bsDelta(o, type, T) {
+  const iv = o.impliedVolatility;
+  if (!(iv > 0.01) || !(T > 0) || !(currentSpot > 0) || optRate == null) return null;
+  const d1 = (Math.log(currentSpot / o.strike) + (optRate + iv * iv / 2) * T) / (iv * Math.sqrt(T));
+  const n = 0.5 * (1 + _erf(d1 / Math.SQRT2));
+  return type === 'call' ? n : n - 1;
+}
+function liqInfo(o) {
+  const spr = o.ask - o.bid, mid = (o.bid + o.ask) / 2;
+  const pct = (o.bid > 0 && o.ask > 0 && mid > 0) ? spr / mid * 100 : null;
+  const ok = pct != null && o.openInterest >= RECO_MIN_OI && (pct <= RECO_MAX_SPREAD_PCT || spr <= 0.05);
+  return {ok, pct};
+}
+function recoStrikes() {
+  const key = stratKey(), R = RECO[key], S = STRAT[key];
+  const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
+  const exp = document.getElementById('expDateSelect').value;
+  const T = Math.max(0.5, dteOf(exp)) / 365;
+  const res = {best1: null, ok1: new Set(), best2: null, ok2: new Set(), rows: [], why: ''};
+  if (!list.length) { res.why = '— 期權鏈無資料，暫不推薦'; return res; }
+  if (R.atm) {
+    const other = (S.list === 'call' ? currentChain.puts : currentChain.calls) || [];
+    const i = nearestIdx(list, currentSpot), o = list[i], p = other.find(x => x.strike === o.strike);
+    if (liqInfo(o).ok && p && liqInfo(p).ok) { res.best1 = i; res.ok1.add(i); }
+    else res.why = '— 價平合約流動性不足（OI 或買賣價差不合格），暫不推薦';
+    return res;
+  }
+  const rows = list.map((o, i) => ({i, o, d: bsDelta(o, S.list, T), liq: liqInfo(o)}));
+  res.rows = rows;
+  const pick = (rng, prefer) => {
+    const c = rows.filter(r => r.d != null && r.liq.ok && Math.abs(r.d) >= rng[0] && Math.abs(r.d) <= rng[1]);
+    const tgt = (rng[0] + rng[1]) / 2;
+    let pool = prefer ? c.filter(prefer) : c;
+    if (!pool.length) pool = c;
+    const best = pool.length ? pool.reduce((a, b) => Math.abs(Math.abs(b.d) - tgt) < Math.abs(Math.abs(a.d) - tgt) ? b : a).i : null;
+    return {ok: new Set(c.map(r => r.i)), best};
+  };
+  // 賣權收租盡量在月線(支撐)下方、Covered Call 盡量在月線(壓力)上方；沒有符合的才放寬
+  let prefer = null;
+  if ((key === 'csp' || key === 'bull_put') && currentMA20) prefer = r => r.o.strike <= Math.min(currentMA20, currentSpot);
+  if (key === 'cc' && currentMA20) prefer = r => r.o.strike >= Math.max(currentMA20, currentSpot);
+  const a = pick(R.d1, prefer);
+  res.ok1 = a.ok; res.best1 = a.best;
+  if (R.d2) { const b = pick(R.d2); res.ok2 = b.ok; res.best2 = res.best1 == null ? null : b.best; }
+  if (res.best1 == null || (R.d2 && res.best2 == null)) {
+    res.best1 = null; res.best2 = null;
+    res.why = rows.every(r => r.d == null)
+      ? '— 期權鏈缺 IV，無法計算 Delta，暫不推薦'
+      : `— 沒有 Delta ${R.d1[0]}–${R.d1[1]}${R.d2 ? `／${R.d2[0]}–${R.d2[1]}` : ''} 且流動性合格（OI ≥ ${RECO_MIN_OI}、價差 ≤ ${RECO_MAX_SPREAD_PCT}%）的履約價，暫不推薦`;
+  }
+  return res;
+}
+function recoText(res) {
+  const key = stratKey(), S = STRAT[key], R = RECO[key];
+  const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
+  const expTxt = lastExpReco.best ? `⭐ 推薦到期 ${lastExpReco.best}${lastExpReco.why ? '（' + lastExpReco.why + '）' : ''}` : (lastExpReco.why || '');
+  const exp = document.getElementById('expDateSelect').value;
+  const offExp = lastExpReco.best && exp !== lastExpReco.best ? `｜目前選 ${exp}，非推薦到期日` : '';
+  if (res.best1 == null) return [expTxt + offExp, res.why].filter(Boolean).join('\n');
+  const T = Math.max(0.5, dteOf(exp)) / 365;
+  const one = (i, side, t) => {
+    const o = list[i], d = bsDelta(o, t, T), lq = liqInfo(o);
+    return `${side} $${o.strike} ${t === 'call' ? 'Call' : 'Put'}｜Delta ${d == null ? '—' : d.toFixed(2)}｜OI ${o.openInterest.toLocaleString()}｜價差 ${lq.pct == null ? '—' : lq.pct.toFixed(1) + '%'}`;
+  };
+  const legs = S.legs.filter(L => L.k === 1 && L.t === S.list).map(L => '⭐ ' + one(res.best1, L.side > 0 ? '買' : '賣', S.list));
+  if (key === 'straddle') {
+    const k = list[res.best1].strike;
+    legs[0] = `⭐ 買 $${k} Call + Put（價平）`;
+  }
+  if (R.d2 && res.best2 != null) {
+    const L2 = S.legs.find(L => L.k === 2);
+    legs.push('⭐ ' + one(res.best2, L2.side > 0 ? '買' : '賣', S.list));
+    const o1 = list[res.best1], o2 = list[res.best2], w = Math.abs(o1.strike - o2.strike);
+    const m1 = (o1.bid + o1.ask) / 2, m2 = (o2.bid + o2.ask) / 2, net = Math.abs(m1 - m2);
+    if (w > 0) legs.push(key === 'bull_put'
+      ? `收權利金(中間價) $${net.toFixed(2)}＝寬度 ${(net / w * 100).toFixed(0)}%${net / w >= 1 / 3 ? ' ✅' : ' ⚠️ 低於 1/3，報酬風險比偏差'}`
+      : `成本(中間價) $${net.toFixed(2)}＝寬度 ${(net / w * 100).toFixed(0)}%${net / w <= 0.5 ? ' ✅' : ' ⚠️ 高於 1/2，報酬風險比偏差'}`);
+  }
+  return [expTxt + offExp, ...legs].filter(Boolean).join('\n');
+}
+function applyReco() {
+  if (!currentChain) return;
+  const res = lastStrikeReco || recoStrikes();
+  if (res.best1 == null) { document.getElementById('recoNote').textContent = recoText(res); return; }
+  document.getElementById('strikeSelect').selectedIndex = res.best1;
+  if (STRAT[stratKey()].k2 && res.best2 != null) document.getElementById('strike2Select').selectedIndex = res.best2;
+  recompute();
+}
 
 function optLabel(o) {
   const q = (o.bid > 0 || o.ask > 0) ? `Bid ${o.bid} / Ask ${o.ask}` : `最後成交 ${o.last}（無即時報價）`;
@@ -2147,15 +2305,18 @@ function populateStrikes() {
   const S = STRAT[stratKey()];
   const list = (S.list === 'call' ? currentChain.calls : currentChain.puts) || [];
   const s1 = document.getElementById('strikeSelect');
-  s1.innerHTML = list.map((o, i) => `<option value="${i}">${esc(optLabel(o))}</option>`).join('');
+  const rec = recoStrikes(); lastStrikeReco = rec;
+  const mk = (best, ok, i) => i === best ? '⭐ ' : (ok.has(i) ? '🎯 ' : '');
+  s1.innerHTML = list.map((o, i) => `<option value="${i}">${mk(rec.best1, rec.ok1, i)}${esc(optLabel(o))}</option>`).join('');
   document.getElementById('strike1Label').textContent = S.legs.length > 1 && S.k2 ? '主腿履約價（賣權/買權）' : '履約價 (Strike)';
   const wrap = document.getElementById('strike2Wrap');
   if (S.k2) {
     wrap.classList.remove('hidden');
     document.getElementById('strike2Label').textContent = S.k2label;
-    document.getElementById('strike2Select').innerHTML = list.map((o, i) => `<option value="${i}">${esc(optLabel(o))}</option>`).join('');
+    document.getElementById('strike2Select').innerHTML = list.map((o, i) => `<option value="${i}">${mk(rec.best2, rec.ok2, i)}${esc(optLabel(o))}</option>`).join('');
   } else wrap.classList.add('hidden');
-  autoAlignMA20();
+  document.getElementById('recoNote').textContent = recoText(rec);
+  if (rec.best1 != null) applyReco(); else autoAlignMA20();   // 沒有合格推薦就退回原本「對齊 MA20」
 }
 function nearestIdx(list, target) {
   let bi = 0, bd = 1e12;
