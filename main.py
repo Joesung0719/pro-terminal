@@ -1474,7 +1474,7 @@ select,input{color:var(--text-main);}
       <div id="breakModeBox">
         <label class="text-xs text-muted font-bold block mb-1">🎯 選股多空方向：</label>
         <div class="grid grid-cols-2 gap-1.5">
-          <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#C0392B] text-white">📈 多方突破</button>
+          <button onclick="setRadarMode('LONG')" id="mode_long" class="py-1 rounded text-xs font-bold bg-[#1E7E5A] text-white">📈 多方突破</button>
           <button onclick="setRadarMode('SHORT')" id="mode_short" class="py-1 rounded text-xs font-bold bg-input text-muted">📉 空方破底</button>
         </div>
       </div>
@@ -1755,8 +1755,8 @@ function closeLineModal() { document.getElementById('lineModal').classList.add('
 
 function setRadarMode(mode) {
   currentRadarMode = mode;
-  document.getElementById('mode_long').className = 'py-1 rounded text-xs font-bold ' + (mode === 'LONG' ? 'bg-[#C0392B] text-white' : 'bg-input text-muted');
-  document.getElementById('mode_short').className = 'py-1 rounded text-xs font-bold ' + (mode === 'SHORT' ? 'bg-[#1E7E5A] text-white' : 'bg-input text-muted');
+  document.getElementById('mode_long').className = 'py-1 rounded text-xs font-bold ' + (mode === 'LONG' ? 'bg-[#1E7E5A] text-white' : 'bg-input text-muted');
+  document.getElementById('mode_short').className = 'py-1 rounded text-xs font-bold ' + (mode === 'SHORT' ? 'bg-[#C0392B] text-white' : 'bg-input text-muted');
   loadScreenerList();
   fetchStockData(currentSymbol);
 }
@@ -1796,7 +1796,7 @@ async function fetchIndicesData() {
   try {
     const data = await api('/api/market/indices');
     const f = o => {
-      const up = o.chg >= 0, col = up ? 'text-[#C0392B]' : 'text-[#1E7E5A]';
+      const up = o.chg >= 0, col = up ? 'text-[#1E7E5A]' : 'text-[#C0392B]';
       return `<span class="${col}">${Number(o.close).toLocaleString()} (${up ? '▲' : '▼'}${Math.abs(o.pct)}%)</span>`;
     };
     ['dji','ixic','sox','spx'].forEach(k => document.getElementById('idx_' + k).innerHTML = f(data[k]));
@@ -1845,7 +1845,7 @@ async function loadWeek52List() {
       </div>
       <div class="text-xs text-muted flex justify-between mt-0.5">
         <span class="truncate max-w-[110px]">${item.name && item.name !== item.symbol ? esc(item.name) : '&nbsp;'}</span>
-        <span style="color:${up ? '#C0392B' : '#1E7E5A'}">$${item.price} ${item.pct == null ? '' : '(' + (up ? '▲' : '▼') + Math.abs(item.pct) + '%)'}</span>
+        <span style="color:${up ? '#1E7E5A' : '#C0392B'}">$${item.price} ${item.pct == null ? '' : '(' + (up ? '▲' : '▼') + Math.abs(item.pct) + '%)'}</span>
       </div>
       <div class="text-xs text-muted flex justify-between"><span>量比 ${item.v_ratio == null ? '—' : item.v_ratio + 'x'}</span><span>${dist}</span></div>
       <div class="text-xs text-muted">52週 ${item.low} – ${item.high}</div>`;
@@ -1928,7 +1928,7 @@ function renderWatchlist() {
       </div>
       <div class="text-xs text-muted flex justify-between mt-0.5">
         <span class="truncate max-w-[110px]">${item.name && item.name !== item.symbol ? esc(item.name) : '&nbsp;'}</span>
-        <span style="color:${up ? '#C0392B' : '#1E7E5A'}">$${item.price} (${up ? '▲' : '▼'}${Math.abs(item.pct)}%)</span>
+        <span style="color:${up ? '#1E7E5A' : '#C0392B'}">$${item.price} (${up ? '▲' : '▼'}${Math.abs(item.pct)}%)</span>
       </div>
       <div class="text-xs text-muted flex justify-between"><span>量比 ${item.v_ratio}x</span><span>距${currentRadarMode === 'LONG' ? '頸線' : '跌破線'} ${item.dist_neck_pct > 0 ? '+' : ''}${item.dist_neck_pct}%</span></div>`;
     div.onclick = () => fetchStockData(item.symbol);
@@ -1975,7 +1975,7 @@ function renderPlotlyChart(data) {
   const grid = light ? '#e2e8f0' : '#1e293b', txt = light ? '#475569' : '#94a3b8';
 
   T.push({x:d, open:data.opens, high:data.highs, low:data.lows, close:data.closes, type:'candlestick', name:'K線',
-    increasing:{line:{color:'#C0392B'}, fillcolor:'#C0392B'}, decreasing:{line:{color:'#1E7E5A'}, fillcolor:'#1E7E5A'}, xaxis:'x', yaxis:'y'});
+    increasing:{line:{color:'#1E7E5A'}, fillcolor:'#1E7E5A'}, decreasing:{line:{color:'#C0392B'}, fillcolor:'#C0392B'}, xaxis:'x', yaxis:'y'});
   const line = (y, color, name, w, dash) => ({x:d, y, type:'scatter', mode:'lines', connectgaps:false, line:{color, width:w||1.6, dash}, name, xaxis:'x', yaxis:'y'});
   if (indState.ma5) T.push(line(data.ma5, '#D97706', '5MA'));
   if (indState.ma10) T.push(line(data.ma10, '#2563EB', '10MA'));
@@ -1997,12 +1997,12 @@ function renderPlotlyChart(data) {
     T.push(line(Array(d.length).fill(w.low), '#F59E0B', `52週低 $${w.low}（${w.low_date}）`, 1.4, 'dot'));
   }
 
-  const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(192,57,43,0.7)' : 'rgba(30,126,90,0.7)');
+  const volColors = data.closes.map((c, i) => c >= data.opens[i] ? 'rgba(30,126,90,0.7)' : 'rgba(192,57,43,0.7)');
   T.push({x:d, y:data.volumes, type:'bar', marker:{color:volColors}, name:'成交量', xaxis:'x', yaxis:'y2'});
   T.push({x:d, y:data.vol_ma5, type:'scatter', mode:'lines', line:{color:'#B45309', width:1.6, dash:'dot'}, name:'5均量', xaxis:'x', yaxis:'y2'});
   T.push({x:d, y:data.k, type:'scatter', mode:'lines', line:{color:'#D97706', width:1.8}, name:'K(9)', xaxis:'x', yaxis:'y3'});
   T.push({x:d, y:data.d, type:'scatter', mode:'lines', line:{color:'#2563EB', width:1.8}, name:'D(9)', xaxis:'x', yaxis:'y3'});
-  T.push({x:d, y:data.macd_hist, type:'bar', marker:{color:data.macd_hist.map(v => (v||0) >= 0 ? '#C0392B' : '#1E7E5A')}, name:'MACD柱', xaxis:'x', yaxis:'y4'});
+  T.push({x:d, y:data.macd_hist, type:'bar', marker:{color:data.macd_hist.map(v => (v||0) >= 0 ? '#1E7E5A' : '#C0392B')}, name:'MACD柱', xaxis:'x', yaxis:'y4'});
   T.push({x:d, y:data.macd_dif, type:'scatter', mode:'lines', line:{color:'#D97706', width:1.5}, name:'DIF', xaxis:'x', yaxis:'y4'});
   T.push({x:d, y:data.macd_dea, type:'scatter', mode:'lines', line:{color:'#2563EB', width:1.5}, name:'DEA', xaxis:'x', yaxis:'y4'});
 
@@ -2032,7 +2032,7 @@ async function fetchStockData(symbol) {
     document.getElementById('chartTitle').innerText = `${data.symbol}${data.name && data.name !== data.symbol ? ' ' + data.name : ''} [${data.exchange}] (${iv})`;
     const up = data.chg >= 0;
     const tag = document.getElementById('currentPriceTag');
-    tag.style.color = up ? '#C0392B' : '#1E7E5A';
+    tag.style.color = up ? '#1E7E5A' : '#C0392B';
     tag.innerText = `收盤: $${data.spot} (${up ? '▲' : '▼'}${Math.abs(data.pct)}%) ${data.last_date}`;
     const m20 = data.ma20_val != null ? '$' + data.ma20_val : '資料不足';
     document.getElementById('spotDisplay').innerText = `$${data.spot} (20MA: ${m20})`;
