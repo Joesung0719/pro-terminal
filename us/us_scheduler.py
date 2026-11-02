@@ -541,10 +541,38 @@ stage2 = _safe(_stage2, "stage2 午盤")
 stage3 = _safe(_stage3, "stage3 收盤結算")
 
 
+def _intended_et(schedule: str):
+    """把觸發這次執行的 cron（UTC，例如 "5 15 * * 1-5"）換成「今天預定的美東時間」。
+
+    GitHub Actions 排程常延遲 30–60 分鐘，若用「實際執行時」的美東鐘點判斷，
+    冬令時早一班（夏令用的那班）可能延遲到正確鐘點而重複推，正確那班也可能延遲到下一個鐘點而漏推。
+    改用「預定時間」判斷：每班只對應一個美東時間，延遲多久都不會跑錯階段。
+    cron 解析不了（例如舊格式一行兩個鐘點）就回傳 None，改用目前時間判斷。
+    """
+    try:
+        minute, hour = schedule.split()[:2]
+        mi, hr = int(minute), int(hour)
+    except Exception:
+        return None
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    sched = now_utc.replace(hour=hr, minute=mi, second=0, microsecond=0)
+    if sched > now_utc + datetime.timedelta(minutes=5):   # 跨過 UTC 午夜才開始跑
+        sched -= datetime.timedelta(days=1)
+    return sched.astimezone(ET)
+
+
 def auto():
-    """依目前美東時間決定階段；給 GitHub Actions 這類「固定 UTC 時間觸發」的排程使用。"""
-    h = datetime.datetime.now(ET).hour
-    wd = datetime.datetime.now(ET).weekday()
+    """依美東時間決定階段；給 GitHub Actions 這類「固定 UTC 時間觸發」的排程使用。
+    夏令/冬令由 America/New_York 時區自動判斷，每年不用手動改。"""
+    sched = os.environ.get("SCHEDULE", "").strip()
+    t = _intended_et(sched) if sched else None
+    now_et = datetime.datetime.now(ET)
+    if t is not None:
+        log.info("排程 %s → 預定美東 %s（%s），實際美東 %s",
+                 sched, t.strftime("%m/%d %H:%M"), "夏令" if t.dst() else "冬令", now_et.strftime("%H:%M"))
+    else:
+        t = now_et
+    h, wd = t.hour, t.weekday()
     if wd >= 5:
         log.info("週末，略過")
         return
@@ -555,7 +583,7 @@ def auto():
     elif h == 16:
         stage3()
     else:
-        log.info("目前美東 %02d 點不在推播時段，略過", h)
+        log.info("預定美東 %02d 點不在推播時段（另一個季節用的班次），略過", h)
 
 
 def run_daemon():
