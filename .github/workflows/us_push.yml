@@ -17,6 +17,10 @@ on:
         description: "手動執行：test / stage1 / stage2 / stage3 / auto"
         default: "test"
 
+# 收盤戰報推播後把「推播了哪幾檔」寫進 tracking/us_push_log.csv 並提交（推播績效追蹤用）
+permissions:
+  contents: write
+
 jobs:
   push:
     runs-on: ubuntu-latest
@@ -26,11 +30,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install requests pandas numpy yfinance tzdata
+      - run: pip install requests pandas numpy yfinance tzdata gspread google-auth
       - name: Run
         env:
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           US_APP_URL: ${{ secrets.US_APP_URL }}
           ASSET_BASE: ${{ secrets.ASSET_BASE }}
+          # 推播績效追蹤寫入 Google 試算表（未設定時暫存 tracking/us_push_log.csv）
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PUSH_SHEET_ID: ${{ secrets.PUSH_SHEET_ID }}
         run: python us/us_scheduler.py ${{ github.event.inputs.cmd || 'auto' }}
+
+      # 推播紀錄只新增不修改；.gitattributes 設定 merge=union，和其他排程同時提交也不會衝突
+      # 這一步失敗不影響已送出的推播
+      - name: Commit push log
+        if: always()
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add tracking/us_push_log.csv 2>/dev/null || exit 0
+          git diff --cached --quiet && exit 0
+          # [skip render]：只是資料更新，不觸發 Render 重新部署
+          git commit -m "Record US LINE push ($(TZ=America/New_York date '+%F %H:%M')) [skip render]"
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            git rebase --abort 2>/dev/null; sleep $((i * 5))
+          done
+          exit 1

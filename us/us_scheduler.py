@@ -395,6 +395,7 @@ def run_screen(mode: str):
         r = screen_symbol(df, mode)
         if r:
             r["symbol"] = s
+            r["date"] = df.index[-1].strftime("%Y-%m-%d")   # 價格所屬K棒日期（推播績效追蹤用）
             out.append(r)
     out.sort(key=lambda x: x["ratio"], reverse=True)
     return out, len(data)
@@ -522,7 +523,14 @@ def _stage3():
         f"👉 {APP_URL}",
     ]
     bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned)
-    send_line_flex(f"美股多空雷達｜收盤戰報：多方 {len(longs)} 檔／空方 {len(shorts)} 檔", bubble, "\n".join(parts))
+    ok = send_line_flex(f"美股多空雷達｜收盤戰報：多方 {len(longs)} 檔／空方 {len(shorts)} 檔", bubble, "\n".join(parts))
+    # 推播績效追蹤：只記錄真的送達 LINE 的標的；任何錯誤都不影響推播
+    if ok and (longs or shorts):
+        try:
+            from push_perf import record_push
+            record_push({"LONG": longs, "SHORT": shorts}, NAME, TOP_N)
+        except Exception as e:
+            log.warning("推播紀錄略過：%s", e)
 
 
 def _safe(fn, label):

@@ -1,0 +1,46 @@
+# 美股 LINE 推播績效：每個交易日收盤後，用真實收盤價回填收盤戰報推播標的的 D+1／D+5／D+20 漲跌幅與最大回檔
+# 寫入 Google 試算表（美股推播紀錄／美股績效／美股統計），另存 tracking/us_push_perf.csv 給網頁版
+# 排程 22:00 UTC ＝ 美東夏令 18:00／冬令 17:00，都在收盤戰報（16:20）之後
+name: us-push-perf
+
+on:
+  schedule:
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: us-push-perf
+  cancel-in-progress: false
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas numpy yfinance tzdata gspread google-auth
+      - name: Backfill push performance
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          PUSH_SHEET_ID: ${{ secrets.PUSH_SHEET_ID }}
+        run: |
+          python us/push_perf.py
+          [ -f tracking/us_push_summary.md ] && cat tracking/us_push_summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Commit performance data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add tracking/us_push_perf.csv tracking/us_push_summary.md 2>/dev/null || exit 0
+          git diff --cached --quiet && exit 0
+          git commit -m "Update US push performance ($(TZ=America/New_York date +%F)) [skip render]"
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            git rebase --abort 2>/dev/null; sleep $((i * 5))
+          done
+          exit 1
