@@ -1279,6 +1279,56 @@ def get_tracking(mode: str = "LONG"):
             "live": live_rows}
 
 
+# ==============================================================================
+# LINE 推播績效（us/push_perf.py 每個交易日收盤後寫入 tracking/us_push_perf.csv；完整紀錄在 Google 試算表）
+#   一樣先讀 GitHub 上的最新檔，讀不到再用本機檔
+# ==============================================================================
+PUSH_PERF_URL = os.environ.get("PUSH_PERF_URL", "").strip() or \
+    "https://raw.githubusercontent.com/Joesung0719/pro-terminal/main/tracking/us_push_perf.csv"
+PUSH_PERF_FILE = os.path.join(_BASE_DIR, "tracking", "us_push_perf.csv")
+
+
+def _load_push_perf():
+    import io
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(_BASE_DIR, "us"))
+    import push_perf as _pp
+    try:
+        r = requests.get(PUSH_PERF_URL, timeout=10)
+        if r.status_code == 200 and r.text.strip():
+            return _pp.read_perf(io.StringIO(r.content.decode("utf-8-sig")))
+    except Exception:
+        pass
+    if os.path.exists(PUSH_PERF_FILE):
+        return _pp.read_perf(PUSH_PERF_FILE)
+    return None
+
+
+@app.get("/api/push_perf")
+def get_push_perf(mode: str = "LONG"):
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(_BASE_DIR, "us"))
+    import push_perf as _pp
+    mode = "SHORT" if mode == "SHORT" else "LONG"
+    try:
+        df = cached(("push_perf",), 600, _load_push_perf)
+    except Exception:
+        df = None
+    if df is None or df.empty or not (df["mode"] == mode).any():
+        return {"ok": False, "mode": mode}
+    grp = []
+    for title, g in _pp.groups(df, mode):
+        grp.append({"title": title, "n": int(len(g)),
+                    "stats": [{**s, "enough": s["n"] >= _pp.MIN_N} for s in _pp.horizon_stats(g)]})
+    g = df[df["mode"] == mode]
+    num = lambda v: _safe_round(pd.to_numeric(v, errors="coerce"))  # noqa: E731
+    recent = [{"symbol": r["symbol"], "name": r["name"], "date": str(r["date"]), "first": r["first"] == True,  # noqa: E712
+               "px": num(r["push_px"]), "r1": num(r["r1"]), "r5": num(r["r5"]), "r20": num(r["r20"]),
+               "days": int(pd.to_numeric(r["days_done"], errors="coerce") or 0)} for _, r in g.head(20).iterrows()]
+    return {"ok": True, "mode": mode, "start": str(df["date"].min()), "total": int(len(g)),
+            "days": int(g["date"].nunique()), "groups": grp, "recent": recent}
+
+
 @app.post("/api/line/push")
 def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
     if not ADMIN_PUSH_PIN:
@@ -1890,6 +1940,7 @@ async function loadTrackingList() {
   if (!d.ok) {
     note.textContent = '';
     box.innerHTML = '<div class="p-4 text-center text-sm text-muted">暫無資料：追蹤名單從每個交易日收盤後開始累積，至少需要 2～3 個月才有參考價值。</div>';
+    try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
     return;
   }
   note.textContent = `追蹤起始 ${d.start}｜${label} ${d.total} 筆、${d.days} 個交易日｜隔日開盤進場、扣成本、超額報酬＝減去 SPY 同期間${currentRadarMode === 'SHORT' ? '（空方取反向）' : ''}`;
@@ -1908,6 +1959,36 @@ async function loadTrackingList() {
     </div>`).join('') : '<div class="p-2 text-center text-sm text-muted">暫無資料</div>';
   box.innerHTML = cards + fail + `<div class="px-3 pt-2 font-black text-sm">🔄 追蹤中（${d.live.length} 檔）</div>` + live +
     '<div class="px-3 py-2 text-xs text-muted">詳細分組見 GitHub 上的 tracking/us_summary.md</div>';
+  try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
+}
+
+// LINE 推播績效：只統計收盤戰報實際推播的標的；美股綠漲紅跌；沒有資料一律顯示「—」
+async function pushPerfHtml() {
+  const label = currentRadarMode === 'LONG' ? '多方突破' : '空方破底';
+  const head = `<div class="px-3 pt-2 font-black text-base">📲 LINE 推播績效｜${label}</div>`;
+  const d = await api(`/api/push_perf?mode=${currentRadarMode}`);
+  if (!d.ok) return head + '<div class="p-3 text-sm text-muted">暫無資料：從收盤戰報開始記錄，每個交易日收盤後回填；D+20 至少要 1 個月後才有數字。</div><hr class="border-theme my-2">';
+  const note = `<div class="px-3 text-xs text-muted">起始 ${esc(d.start)}｜推播 ${d.total} 筆、${d.days} 天｜基準＝推播價（收盤），D+N＝之後第 N 個交易日收盤，未扣手續費${currentRadarMode === 'SHORT' ? '，空方下跌算賺' : ''}</div>`;
+  const [all, ...subs] = d.groups;
+  // 首日／延續：精簡表格（D+5 勝率、平均、最大回檔平均），避免手機上卡片太長
+  const sub = `<table class="w-full text-sm mt-1"><tr class="text-muted text-xs"><th class="text-left px-3">D+5</th><th class="text-left">勝率</th><th class="text-left">平均</th><th class="text-left">最大回檔</th></tr>` +
+    subs.map(g => { const s = g.stats[1]; return `<tr class="font-bold"><td class="px-3 py-1">${esc(g.title.split('｜')[1] || g.title)}（${s.n}）</td><td>${s.win == null ? '—' : s.win + '%'}</td><td>${trkPct(s.avg)}</td><td>${trkPct(s.mdd_avg)}</td></tr>`; }).join('') + '</table>';
+  const grp = [all].map(g => `
+    <div class="px-3 pt-2 font-bold text-sm">${esc(g.title)}（${g.n} 筆）</div>` + g.stats.map(s => `
+    <div class="px-3 py-2 rounded-lg bg-input border border-theme">
+      <div class="flex justify-between font-black text-base"><span>D+${s.h}</span><span>勝率 ${s.win == null ? '—' : s.win + '%'}</span></div>
+      <div class="text-sm mt-0.5">平均 ${trkPct(s.avg)}｜中位數 ${trkPct(s.median)}</div>
+      <div class="text-sm">最大回檔 平均 ${trkPct(s.mdd_avg)}｜最差 ${trkPct(s.mdd_worst)}</div>
+      <div class="text-xs text-muted">已完成 ${s.n} 筆${s.enough ? '' : '<span class="text-amber-500">｜⚠️ 樣本不足，僅供觀察</span>'}</div>
+    </div>`).join('')).join('');
+  const recent = d.recent.map(r => `
+    <div class="px-3 py-1.5 rounded-lg bg-input border border-theme cursor-pointer hover:opacity-80" onclick="fetchStockData('${esc(r.symbol)}')">
+      <div class="flex justify-between font-bold text-sm"><span>${esc(r.symbol)} <span class="text-xs text-muted">${r.name && r.name !== r.symbol ? esc(r.name) : ''}</span></span><span>${r.px == null ? '—' : '$' + r.px}</span></div>
+      <div class="text-xs text-muted">${esc(r.date.slice(5))}｜${r.first ? '首日' : '延續'}｜第 ${r.days}/20 天</div>
+      <div class="text-sm">D+1 ${trkPct(r.r1)}｜D+5 ${trkPct(r.r5)}｜D+20 ${trkPct(r.r20)}</div>
+    </div>`).join('');
+  return head + note + grp + sub + `<div class="px-3 pt-2 font-black text-sm">🧾 最近推播</div>` + recent +
+    '<div class="px-3 py-2 text-xs text-muted">完整紀錄在 Google 試算表（美股推播紀錄／美股績效／美股統計）</div><hr class="border-theme my-2">';
 }
 
 function renderWatchlist() {
