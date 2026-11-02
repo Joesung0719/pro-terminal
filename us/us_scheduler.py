@@ -154,7 +154,53 @@ def _flex_index_card(idx_rows, vix):
     return _card(rows, spacing="sm")
 
 
-def _flex_pick_card(r, mode):
+def _event_texts(lines):
+    """事件提醒文字列：緊急（3 天內）用琥珀色粗體，其餘深藍。"""
+    return [_t(txt, "md", "#a8650a" if urgent else NAVY, True, margin="xs") for txt, urgent in (lines or [])]
+
+
+def _flex_macro_card(lines):
+    body = [_t("📅 未來 7 天重大事件", "lg", NAVY, True)]
+    body += _event_texts(lines) if lines else [_t("未來 7 天無 FOMC／CPI／非農公布", "md", MUTED, margin="xs")]
+    return _card(body, spacing="xs")
+
+
+def _get_events(symbols):
+    """總經事件＋個股事件；任何錯誤都不中斷推播（個股抓不到時顯示「—」）。"""
+    macro, per = None, {}
+    try:
+        from us_events import macro_events, stock_events
+        try:
+            macro = macro_events()
+        except Exception as e:
+            log.warning("總經事件略過：%s", e)
+        try:
+            per = stock_events(symbols)
+        except Exception as e:
+            log.warning("個股事件略過：%s", e)
+            per = {s: [("📌 事件提醒 —", False)] for s in symbols}
+    except Exception as e:
+        log.warning("事件模組載入失敗：%s", e)
+    return macro, per
+
+
+def _macro_block(macro):
+    if macro is None:
+        return [_card([_t("📅 重大事件 —（暫時抓不到）", "md", MUTED)])]
+    return [_flex_macro_card(macro)]
+
+
+def _events_text(lines, indent="   "):
+    return "".join(f"\n{indent}{txt}" for txt, _ in (lines or []))
+
+
+def _macro_text(macro):
+    if macro is None:
+        return "📅 重大事件 —"
+    return "📅 未來 7 天重大事件：" + ("".join(f"\n{txt}" for txt, _ in macro) if macro else "無 FOMC／CPI／非農公布")
+
+
+def _flex_pick_card(r, mode, events=None):
     accent = UP if mode == "LONG" else DOWN
     pct_color = UP if r["pct"] >= 0 else DOWN
     arrow = "▲" if r["pct"] >= 0 else "▼"
@@ -170,13 +216,14 @@ def _flex_pick_card(r, mode):
     if r["dist"] > 5:
         body.append(_t("⚠️ 距離偏遠，追價風險高", "md", "#a8650a", margin="xs"))
     body.append(_t(f"停損參考：${r['neck']:.2f} ／ 月線 ${r['ma20']:.2f}", "md", "#444444", margin="xs"))
+    body += _event_texts(events)
     return _box("horizontal", [
         _box("vertical", [], width="6px", backgroundColor=accent),
         _box("vertical", body, flex=1, paddingAll="12px"),
     ], backgroundColor="#ffffff", cornerRadius="12px", borderWidth="1px", borderColor=CARD_LINE)
 
 
-def _flex_mover_card(r):
+def _flex_mover_card(r, events=None):
     color = UP if r["vs_prev"] >= 0 else DOWN
     arrow = "▲" if r["vs_prev"] >= 0 else "▼"
     return _box("horizontal", [
@@ -187,7 +234,7 @@ def _flex_mover_card(r):
                 _t(f"${r['last']:.2f} {arrow}{abs(r['vs_prev']):.1f}%", "lg", color, True, flex=5, align="end"),
             ]),
             _t(f"較昨收 {r['vs_prev']:+.1f}%｜較今開 {r['vs_open']:+.1f}%", "md", INFO, margin="sm"),
-        ], flex=1, paddingAll="12px"),
+        ] + _event_texts(events), flex=1, paddingAll="12px"),
     ], backgroundColor="#ffffff", cornerRadius="12px", borderWidth="1px", borderColor=CARD_LINE)
 
 
@@ -401,13 +448,13 @@ def run_screen(mode: str):
     return out, len(data)
 
 
-def fmt_pick(r, mode):
+def fmt_pick(r, mode, events=None):
     arrow = "▲" if r["pct"] >= 0 else "▼"
     tag = "首日" if r["first"] else "延續"
     far = " ⚠️距離偏遠" if r["dist"] > 5 else ""
     return (f"{'🔥' if mode == 'LONG' else '⚡'} {r['symbol']} {NAME.get(r['symbol'], '')} ${r['price']:.2f} ({arrow}{abs(r['pct']):.1f}%)\n"
             f"   {tag}｜量比 {r['ratio']:.1f}x｜距{'頸線' if mode == 'LONG' else '跌破線'} {r['dist']:+.1f}%{far}\n"
-            f"   🛡️ 停損參考：${r['neck']:.2f} ／ 月線 ${r['ma20']:.2f}")
+            f"   🛡️ 停損參考：${r['neck']:.2f} ／ 月線 ${r['ma20']:.2f}" + _events_text((events or {}).get(r["symbol"])))
 
 
 # ------------------------------------------------------------------------------
@@ -435,12 +482,14 @@ def intraday_moves(symbols):
     return rows
 
 
-def movers_text(rows):
+def movers_text(rows, events=None):
     if not rows:
         return "（暫無分時資料，可能是 Yahoo 延遲，稍後請看戰情室）"
     rows = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
+    events = events or {}
     return "\n".join(
         f"{'▲' if r['vs_prev'] >= 0 else '▼'} {r['symbol']}: ${r['last']:.2f} (較昨收 {r['vs_prev']:+.1f}%｜較今開 {r['vs_open']:+.1f}%)"
+        + _events_text(events.get(r["symbol"]))
         for r in rows
     )
 
@@ -458,14 +507,16 @@ def _stage1():
         log.info("今天美股休市，略過 stage1")
         return
     rows = intraday_moves(WATCH_CORE)
+    top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
+    macro, ev = _get_events([r["symbol"] for r in top])
     text = (
         f"⚡ 【美股多空雷達 V9.9｜開盤半小時戰報】\n{header_line()}\n"
-        f"早盤初段量能已消化，核心觀察股：\n{movers_text(rows)}\n"
+        f"{_macro_text(macro)}\n\n"
+        f"早盤初段量能已消化，核心觀察股：\n{movers_text(rows, ev)}\n"
         f"━━━━━━━━━━━━━━\n※ 早盤波動大，請避免追價；僅供量化輔助監控。\n👉 {APP_URL}"
     )
-    top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
-    body = [_section_title("核心觀察股（波動最大）", NAVY)]
-    body += [_flex_mover_card(r) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
+    body = _macro_block(macro) + [_section_title("核心觀察股（波動最大）", NAVY)]
+    body += [_flex_mover_card(r, ev.get(r["symbol"])) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
     bubble = _flex_bubble("美股多空雷達｜開盤半小時", body, "早盤波動大，避免追價｜僅供量化輔助監控")
     send_line_flex("美股多空雷達｜開盤半小時戰報", bubble, text)
 
@@ -478,25 +529,30 @@ def _stage2():
     idx_rows, vix = index_data()
     idx_lines, vix_line = index_summary(idx_rows, vix)
     rows = intraday_moves(WATCH_CORE)
+    top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
+    macro, ev = _get_events([r["symbol"] for r in top])
     text = (
         f"🌙 【美股多空雷達 V9.9｜午盤戰報】\n{header_line()}\n\n"
         + "\n".join(idx_lines) + (f"\n{vix_line}" if vix_line else "")
-        + f"\n\n核心觀察股：\n{movers_text(rows)}\n"
+        + f"\n\n{_macro_text(macro)}"
+        + f"\n\n核心觀察股：\n{movers_text(rows, ev)}\n"
         f"━━━━━━━━━━━━━━\n※ 僅供量化輔助監控。\n👉 {APP_URL}"
     )
-    top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
-    body = [_flex_index_card(idx_rows, vix), _section_title("核心觀察股（波動最大）", NAVY)]
-    body += [_flex_mover_card(r) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
+    body = [_flex_index_card(idx_rows, vix)] + _macro_block(macro) + [_section_title("核心觀察股（波動最大）", NAVY)]
+    body += [_flex_mover_card(r, ev.get(r["symbol"])) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
     bubble = _flex_bubble("美股多空雷達｜午盤戰報", body, "僅供量化輔助監控")
     send_line_flex("美股多空雷達｜午盤戰報", bubble, text)
 
 
-def build_close_bubble(idx_rows, vix, longs, shorts, scanned):
+def build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro=None, ev=None):
+    ev = ev or {}
     body = [_flex_index_card(idx_rows, vix)]
+    if macro is not None or ev:
+        body += _macro_block(macro)
     body.append(_section_title(f"多方突破  共 {len(longs)} 檔", UP))
-    body += [_flex_pick_card(r, "LONG") for r in longs[:TOP_N]] or [_card([_t("今日無符合條件之多方突破標的", "md", MUTED)])]
+    body += [_flex_pick_card(r, "LONG", ev.get(r["symbol"])) for r in longs[:TOP_N]] or [_card([_t("今日無符合條件之多方突破標的", "md", MUTED)])]
     body.append(_section_title(f"空方破底  共 {len(shorts)} 檔", DOWN))
-    body += [_flex_pick_card(r, "SHORT") for r in shorts[:TOP_N]] or [_card([_t("今日無符合條件之空方破底標的", "md", MUTED)])]
+    body += [_flex_pick_card(r, "SHORT", ev.get(r["symbol"])) for r in shorts[:TOP_N]] or [_card([_t("今日無符合條件之空方破底標的", "md", MUTED)])]
     body.append(_t(f"已掃描 {scanned}/{len(SYMBOLS)} 檔｜{NECK_DAYS}日頸線、量比≥{VOL_RATIO}x、收紅/黑K、站上/跌破月線",
                    "sm", MUTED, margin="lg"))
     return _flex_bubble("美股多空雷達｜收盤戰報", body, "僅為量化條件篩選結果，非投資建議")
@@ -511,18 +567,20 @@ def _stage3():
     idx_lines, vix_line = index_summary(idx_rows, vix)
     longs, scanned = run_screen("LONG")
     shorts, _ = run_screen("SHORT")
+    macro, ev = _get_events([r["symbol"] for r in longs[:TOP_N] + shorts[:TOP_N]])
     parts = [
         f"📊 【美股多空雷達 V9.9｜全日收盤戰報】\n{header_line()}\n",
         "\n".join(idx_lines) + (f"\n{vix_line}" if vix_line else ""),
+        "\n" + _macro_text(macro),
         f"\n━━ 多方突破（共 {len(longs)} 檔，顯示前 {min(len(longs), TOP_N)}）━━",
-        "\n".join(fmt_pick(r, "LONG") for r in longs[:TOP_N]) if longs else "今日無符合條件之多方突破標的",
+        "\n".join(fmt_pick(r, "LONG", ev) for r in longs[:TOP_N]) if longs else "今日無符合條件之多方突破標的",
         f"\n━━ 空方破底（共 {len(shorts)} 檔，顯示前 {min(len(shorts), TOP_N)}）━━",
-        "\n".join(fmt_pick(r, "SHORT") for r in shorts[:TOP_N]) if shorts else "今日無符合條件之空方破底標的",
+        "\n".join(fmt_pick(r, "SHORT", ev) for r in shorts[:TOP_N]) if shorts else "今日無符合條件之空方破底標的",
         f"\n已掃描 {scanned}/{len(SYMBOLS)} 檔｜條件：{NECK_DAYS}日頸線、量比≥{VOL_RATIO}x、收紅/黑K、站上/跌破月線",
         "※ 僅為量化條件篩選結果，非投資建議。",
         f"👉 {APP_URL}",
     ]
-    bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned)
+    bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro, ev)
     ok = send_line_flex(f"美股多空雷達｜收盤戰報：多方 {len(longs)} 檔／空方 {len(shorts)} 檔", bubble, "\n".join(parts))
     # 推播績效追蹤：只記錄真的送達 LINE 的標的；任何錯誤都不影響推播
     if ok and (longs or shorts):
