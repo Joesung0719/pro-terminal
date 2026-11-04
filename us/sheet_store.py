@@ -152,3 +152,24 @@ def _col_letter(n):
         n, r = divmod(n - 1, 26)
         s = chr(65 + r) + s
     return s
+
+
+def describe_error(e) -> str:
+    """錯誤診斷文字：例外類型、Google 回應、試算表 ID 長度（不印出金鑰或 ID 內容，避免公開日誌外洩）。"""
+    parts = [f"{type(e).__name__}: {e!r}"]
+    # gspread 會把 Google 的 403／404 包成 PermissionError／SpreadsheetNotFound，真正原因在 __cause__
+    resp = getattr(e, "response", None) or getattr(getattr(e, "__cause__", None), "response", None)
+    if resp is not None:
+        try:
+            parts.append(f"HTTP {resp.status_code} {str(resp.text)[:300]}")
+        except Exception:
+            pass
+    sid = os.environ.get("PUSH_SHEET_ID", "")
+    bad = [c for c in sid if not (c.isalnum() or c in "-_")]
+    parts.append(f"PUSH_SHEET_ID 長度 {len(sid)}（標準 44）" + ("，含空白或特殊字元" if bad else ""))
+    try:
+        info = json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", ""))
+        parts.append("金鑰 JSON 可解析" + ("" if info.get("client_email") else "，但缺 client_email"))
+    except Exception as je:
+        parts.append(f"金鑰 JSON 無法解析（{type(je).__name__}）")
+    return "｜".join(parts)

@@ -104,7 +104,7 @@ def record_push(picks: dict, names: dict, top_n: int):
                 print(f"📝 推播紀錄（試算表）：新增 {len(rows_s)} 檔")
                 return
             except Exception as e:
-                print(f"⚠️ 試算表寫入失敗，改存 CSV：{e}")
+                print(f"⚠️ 試算表寫入失敗，改存 CSV：{sheet_store.describe_error(e)}")
         seen = {_key(r) for r in _read_csv(LOG_CSV)}
         rows_c = [r for r in rows if _key(r) not in seen]
         _append_csv(LOG_CSV, LOG_COLS, rows_c)
@@ -268,7 +268,7 @@ def load_log():
                 print(f"📤 CSV 暫存紀錄補進試算表 {len(missing)} 筆")
             rows = sheet_rows + missing
         except Exception as e:
-            print(f"⚠️ 試算表讀取失敗，只用 CSV 紀錄：{e}")
+            print(f"⚠️ 試算表讀取失敗，只用 CSV 紀錄：{sheet_store.describe_error(e)}")
     return rows
 
 
@@ -314,7 +314,7 @@ def main():
                                      pct_keys=("avg", "median", "mdd_avg", "mdd_worst"), up=UP, down=DOWN)
             print("📤 試算表已更新")
         except Exception as e:
-            print(f"⚠️ 試算表寫入失敗（repo 內 CSV 已更新）：{e}")
+            print(f"⚠️ 試算表寫入失敗（repo 內 CSV 已更新）：{sheet_store.describe_error(e)}")
     else:
         print("ℹ️ 未設定 GOOGLE_SERVICE_ACCOUNT_JSON／PUSH_SHEET_ID，只更新 repo 內 CSV")
     live = int((pd.to_numeric(perf["days_done"], errors="coerce").fillna(0) < MAX_H).sum())
