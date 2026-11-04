@@ -157,7 +157,8 @@ def _col_letter(n):
 def describe_error(e) -> str:
     """錯誤診斷文字：例外類型、Google 回應、試算表 ID 長度（不印出金鑰或 ID 內容，避免公開日誌外洩）。"""
     parts = [f"{type(e).__name__}: {e!r}"]
-    resp = getattr(e, "response", None)
+    # gspread 會把 Google 的 403／404 包成 PermissionError／SpreadsheetNotFound，真正原因在 __cause__
+    resp = getattr(e, "response", None) or getattr(getattr(e, "__cause__", None), "response", None)
     if resp is not None:
         try:
             parts.append(f"HTTP {resp.status_code} {str(resp.text)[:300]}")
