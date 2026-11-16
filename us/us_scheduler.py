@@ -498,7 +498,8 @@ def header_line():
     now_et = datetime.datetime.now(ET)
     now_tp = datetime.datetime.now(TPE)
     dst = "夏令" if bool(now_et.dst()) else "冬令"
-    return f"{dst}｜台北 {now_tp.strftime('%m/%d %H:%M')}／美東 {now_et.strftime('%H:%M')}"
+    note = f"（排程延遲 {SCHEDULE_DELAY_MIN} 分）" if SCHEDULE_DELAY_MIN >= DELAY_NOTE_MIN else ""
+    return f"{dst}｜台北 {now_tp.strftime('%m/%d %H:%M')}／美東 {now_et.strftime('%H:%M')}{note}"
 
 
 def _stage1():
@@ -607,13 +608,116 @@ stage2 = _safe(_stage2, "stage2 午盤")
 stage3 = _safe(_stage3, "stage3 收盤結算")
 
 
+# ── 排程延遲保護 ──
+# GitHub Actions 的 cron 會被延遲（台股曾延遲約 8 小時）。每一段有固定預定時間（美東）；
+# 執行時間距預定時間太久就不推，避免午間才收到「開盤半小時」、半夜收到「收盤戰報」。
+# 時段由「觸發來源」決定（cron 字串或外部觸發帶的 slot），不再看執行當下的美東小時，
+# 否則延遲會被判成錯誤時段（例如開盤班延遲 2 小時被當成午盤）。
+# 夏令/冬令：每個 UTC 時間各自一條 cron；只有「UTC 時間剛好等於今天預定時間」的那條有效，另一條直接略過。
+SLOT_ET = {"stage1": (10, 5), "stage2": (12, 35), "stage3": (16, 20)}          # 預定時間（美東）
+CRON_TO_SLOT = {                                                                 # cron 字串 → (時段, 該 cron 的 UTC 小時)
+    "5 14 * * 1-5": ("stage1", 14), "5 15 * * 1-5": ("stage1", 15),
+    "35 16 * * 1-5": ("stage2", 16), "35 17 * * 1-5": ("stage2", 17),
+    "20 20 * * 1-5": ("stage3", 20), "20 21 * * 1-5": ("stage3", 21),
+}
+MAX_DELAY_MIN = int(os.environ.get("MAX_DELAY_MIN", "120"))   # 超過就不推
+EARLY_TOL_MIN = 10                                             # 早於預定時間超過這個分鐘數也不推
+DELAY_NOTE_MIN = 15                                            # 延遲達此分鐘數，卡片標註「排程延遲」
+SCHEDULE_DELAY_MIN = 0
+UTC = datetime.timezone.utc
+
+
+def current_slot():
+    """回傳 (時段, cron 的 UTC 小時)。外部觸發帶 PUSH_SLOT（UTC 小時為 None）；cron 由 PUSH_SCHEDULE 換算；
+    手動執行回傳 (None, None)。"""
+    slot = os.environ.get("PUSH_SLOT", "").strip()
+    if slot in SLOT_ET:
+        return slot, None
+    return CRON_TO_SLOT.get(os.environ.get("PUSH_SCHEDULE", "").strip(), (None, None))
+
+
+def slot_sched_et(slot, now_et):
+    h, m = SLOT_ET[slot]
+    return now_et.replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+def already_pushed_this_slot(slot, now_et):
+    """查 GitHub：今天同一時段是否已有另一次執行成功（外部觸發與 cron 備援只推一次）。
+    查詢失敗時回傳 False（寧可重複推，也不要漏推）。"""
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    run_id = os.environ.get("GITHUB_RUN_ID", "").strip()
+    if not token or not repo:
+        return False
+    day_start_utc = now_et.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/actions/workflows/us_push.yml/runs",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            params={"created": f">={day_start_utc}", "per_page": 50}, timeout=12)
+        if r.status_code != 200:
+            log.warning("查詢同時段執行紀錄失敗 HTTP %s，視為尚未推播", r.status_code)
+            return False
+        title = f"US LINE {slot}"
+        for run in r.json().get("workflow_runs", []):
+            if str(run.get("id")) != run_id and run.get("display_title") == title \
+                    and run.get("status") == "completed" and run.get("conclusion") == "success":
+                log.info("同時段已有成功執行 #%s（%s）", run.get("run_number"), run.get("created_at"))
+                return True
+    except Exception as e:
+        log.warning("查詢同時段執行紀錄例外 %s，視為尚未推播", type(e).__name__)
+    return False
+
+
+def mark_skipped():
+    """告知 workflow：這次沒有推播。workflow 會把這次執行標為「已取消」，之後的去重查詢就不會把它當成已推播。"""
+    out = os.environ.get("GITHUB_OUTPUT", "").strip()
+    if out:
+        try:
+            with open(out, "a", encoding="utf-8") as f:
+                f.write("skipped=true\n")
+        except Exception:
+            pass
+
+
+def check_schedule(slot, cron_utc_hour, now_et=None):
+    """回傳 True 表示可以推播；False 表示本次略過（並標記為已取消）。"""
+    global SCHEDULE_DELAY_MIN
+    now_et = now_et or datetime.datetime.now(ET)
+    sched = slot_sched_et(slot, now_et)
+    if cron_utc_hour is not None and sched.astimezone(UTC).hour != cron_utc_hour:
+        log.info("⏭️ %s 的這條 cron（UTC %02d 點）不是今天夏令/冬令對應的時間，略過", slot, cron_utc_hour)
+        mark_skipped()
+        return False
+    delay = (now_et - sched).total_seconds() / 60.0
+    SCHEDULE_DELAY_MIN = max(int(round(delay)), 0)
+    if delay > MAX_DELAY_MIN or delay < -EARLY_TOL_MIN:
+        log.info("⏭️ %s 預定美東 %s，現在 %s（相差 %+.0f 分，允許 %d～%d 分），已過時／過早，本次不推播",
+                 slot, sched.strftime("%H:%M"), now_et.strftime("%H:%M"), delay, -EARLY_TOL_MIN, MAX_DELAY_MIN)
+        mark_skipped()
+        return False
+    if already_pushed_this_slot(slot, now_et):
+        log.info("⏭️ %s 今天已推播過，本次不重複推播", slot)
+        mark_skipped()
+        return False
+    if delay >= DELAY_NOTE_MIN:
+        log.warning("⚠️ %s 延遲 %.0f 分鐘才執行，卡片會標註排程延遲", slot, delay)
+    return True
+
+
 def auto():
-    """依目前美東時間決定階段；給 GitHub Actions 這類「固定 UTC 時間觸發」的排程使用。"""
-    h = datetime.datetime.now(ET).hour
-    wd = datetime.datetime.now(ET).weekday()
-    if wd >= 5:
+    """GitHub Actions 觸發用。有時段資訊（cron 字串或外部觸發的 slot）→ 依該時段並做延遲保護；
+    沒有（手動執行）→ 沿用舊行為，依目前美東小時判斷。"""
+    now_et = datetime.datetime.now(ET)
+    if now_et.weekday() >= 5:
         log.info("週末，略過")
         return
+    slot, cron_utc_hour = current_slot()
+    if slot:
+        if check_schedule(slot, cron_utc_hour, now_et):
+            {"stage1": stage1, "stage2": stage2, "stage3": stage3}[slot]()
+        return
+    h = now_et.hour
     if h == 10:
         stage1()
     elif h == 12:

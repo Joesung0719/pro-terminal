@@ -6,20 +6,40 @@
 # 由 us_scheduler.py auto 依「美東當下幾點」只執行對的那一個，另一個自動略過。
 name: us-line-push
 
+# 顯示名稱含「時段」：外部準時觸發與 cron 備援靠它判斷同一時段只推一次
+run-name: US LINE ${{ inputs.slot || fromJSON('{"5 14 * * 1-5":"stage1","5 15 * * 1-5":"stage1","35 16 * * 1-5":"stage2","35 17 * * 1-5":"stage2","20 20 * * 1-5":"stage3","20 21 * * 1-5":"stage3"}')[github.event.schedule] || 'manual' }}
+
 on:
   schedule:
-    - cron: "5 14,15 * * 1-5"    # 美東 10:05 附近 → 開盤半小時戰報
-    - cron: "35 16,17 * * 1-5"   # 美東 12:35 附近 → 午盤戰報
-    - cron: "20 20,21 * * 1-5"   # 美東 16:20 附近 → 收盤結算
+    # 每個 UTC 時間獨立一條 cron（us_scheduler.py 靠 cron 字串判斷時段與夏令/冬令，延遲也不會判錯）
+    # 夏令(3月中–11月初)美東=UTC-4，冬令=UTC-5；兩條只有一條會被採用，另一條自動略過
+    - cron: "5 14 * * 1-5"     # 美東 10:05（夏令）→ 開盤半小時戰報
+    - cron: "5 15 * * 1-5"     # 美東 10:05（冬令）
+    - cron: "35 16 * * 1-5"    # 美東 12:35（夏令）→ 午盤戰報
+    - cron: "35 17 * * 1-5"    # 美東 12:35（冬令）
+    - cron: "20 20 * * 1-5"    # 美東 16:20（夏令）→ 收盤結算
+    - cron: "20 21 * * 1-5"    # 美東 16:20（冬令）
   workflow_dispatch:
     inputs:
       cmd:
         description: "手動執行：test / stage1 / stage2 / stage3 / auto"
         default: "test"
+      slot:
+        description: "時段（外部準時觸發請帶，並把 cmd 設為 auto；手動測試留空＝不做延遲保護與去重）"
+        required: false
+        default: ""
+        type: choice
+        options: ["", "stage1", "stage2", "stage3"]
+
+# 同一時段排隊執行（外部觸發與 cron 備援不會同時跑），後到的會看到先到的已推播而跳過
+concurrency:
+  group: us-push-${{ inputs.slot || fromJSON('{"5 14 * * 1-5":"stage1","5 15 * * 1-5":"stage1","35 16 * * 1-5":"stage2","35 17 * * 1-5":"stage2","20 20 * * 1-5":"stage3","20 21 * * 1-5":"stage3"}')[github.event.schedule] || github.run_id }}
+  cancel-in-progress: false
 
 # 收盤戰報推播後把「推播了哪幾檔」寫進 tracking/us_push_log.csv 並提交（推播績效追蹤用）
 permissions:
   contents: write
+  actions: write   # 查同時段是否已推播；被跳過的執行把自己標為「已取消」
 
 jobs:
   push:
@@ -32,7 +52,12 @@ jobs:
           python-version: "3.11"
       - run: pip install requests pandas numpy yfinance tzdata gspread google-auth
       - name: Run
+        id: push
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 外部觸發帶的時段；cron 觸發時為空，改由 PUSH_SCHEDULE 換算
+          PUSH_SLOT: ${{ inputs.slot }}
+          PUSH_SCHEDULE: ${{ github.event.schedule }}
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           US_APP_URL: ${{ secrets.US_APP_URL }}
@@ -41,6 +66,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           PUSH_SHEET_ID: ${{ secrets.PUSH_SHEET_ID }}
         run: python us/us_scheduler.py ${{ github.event.inputs.cmd || 'auto' }}
+
+      # 本次因「排程過時／同時段已推播／冬夏令不對應」而沒推 → 標為已取消，去重時才不會被當成已推播
+      - name: Mark skipped run as cancelled
+        if: steps.push.outputs.skipped == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh run cancel "${{ github.run_id }}" --repo "${{ github.repository }}" || true
 
       # 推播紀錄只新增不修改；.gitattributes 設定 merge=union，和其他排程同時提交也不會衝突
       # 這一步失敗不影響已送出的推播
