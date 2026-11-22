@@ -167,7 +167,7 @@ def main():
         sdates = sigs[sigs["symbol"] == sym]["date"]
         st.update({
             "name": name, "symbol": sym, "ok": True, "updated": now, "asof": last_date,
-            "close": round(float(last["Close"]), 2),
+            "close": round(float(d["Close"].iloc[-1]), 2),
             "dd120": round(float(last["dd120"]) * 100, 2) if pd.notna(last["dd120"]) else None,
             "rsi": round(float(last["rsi"]), 1) if pd.notna(last["rsi"]) else None,
             "crash8": bool(last["dd8"]), "crash12": bool(last["dd12"]), "shock5": bool(last["shock_recent"]),
