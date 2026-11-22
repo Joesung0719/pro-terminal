@@ -1280,6 +1280,60 @@ def get_tracking(mode: str = "LONG"):
 
 
 # ==============================================================================
+# 大盤 RSI 底背離落底確認（us/rebound_watch.py 每日收盤後寫入 tracking/rebound_*；觀察用，不進篩選與推播）
+#   先讀 GitHub 上的最新檔，讀不到再用本機檔；都沒有回傳 ok=False
+# ==============================================================================
+REBOUND_BASE_URL = os.environ.get("REBOUND_BASE_URL", "").strip() or \
+    "https://raw.githubusercontent.com/Joesung0719/pro-terminal/main/tracking/"
+
+
+def _load_rebound():
+    import io
+    import json as _json
+    status, sig = None, None
+    try:
+        r = requests.get(REBOUND_BASE_URL + "rebound_status.json", timeout=10)
+        if r.status_code == 200:
+            status = _json.loads(r.content.decode("utf-8"))
+        r = requests.get(REBOUND_BASE_URL + "rebound_signals.csv", timeout=10)
+        if r.status_code == 200 and r.text.strip():
+            sig = pd.read_csv(io.StringIO(r.content.decode("utf-8-sig")), dtype={"symbol": str})
+    except Exception:
+        pass
+    if status is None:
+        try:
+            with open(os.path.join(_BASE_DIR, "tracking", "rebound_status.json"), encoding="utf-8") as f:
+                status = _json.load(f)
+            sig = pd.read_csv(os.path.join(_BASE_DIR, "tracking", "rebound_signals.csv"), dtype={"symbol": str}, encoding="utf-8-sig")
+        except Exception:
+            pass
+    return status, sig
+
+
+@app.get("/api/rebound")
+def get_rebound():
+    try:
+        status, sig = cached(("rebound",), 600, _load_rebound)
+    except Exception:
+        status, sig = None, None
+    if not status:
+        return {"ok": False}
+    items = []
+    for sym, st in status.items():
+        g = sig[sig["symbol"] == sym] if sig is not None and len(sig) else None
+        stats = []
+        for h in (5, 10, 20):
+            a = pd.to_numeric(g[f"r{h}"], errors="coerce").dropna() if g is not None else pd.Series(dtype=float)
+            n = len(a)
+            stats.append({"h": h, "n": n, "win": _safe_round((a > 0).mean() * 100, 0) if n else None,
+                          "avg": _safe_round(a.mean()) if n else None,
+                          "median": _safe_round(a.median()) if n else None})
+        items.append({**{k: st.get(k) for k in ("name", "symbol", "ok", "asof", "dd120", "rsi", "crash8", "crash12",
+                                                   "shock5", "div_today", "last_signal", "track_start")}, "stats": stats})
+    return {"ok": True, "items": items}
+
+
+# ==============================================================================
 # LINE 推播績效（us/push_perf.py 每個交易日收盤後寫入 tracking/us_push_perf.csv；完整紀錄在 Google 試算表）
 #   一樣先讀 GitHub 上的最新檔，讀不到再用本機檔
 # ==============================================================================
@@ -1941,6 +1995,7 @@ async function loadTrackingList() {
     note.textContent = '';
     box.innerHTML = '<div class="p-4 text-center text-sm text-muted">暫無資料：追蹤名單從每個交易日收盤後開始累積，至少需要 2～3 個月才有參考價值。</div>';
     try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
+  try { box.insertAdjacentHTML('afterbegin', await reboundHtml()); } catch (e) { /* 落底確認載入失敗不影響追蹤名單 */ }
     return;
   }
   note.textContent = `追蹤起始 ${d.start}｜${label} ${d.total} 筆、${d.days} 個交易日｜隔日開盤進場、扣成本、超額報酬＝減去 SPY 同期間${currentRadarMode === 'SHORT' ? '（空方取反向）' : ''}`;
@@ -1960,6 +2015,25 @@ async function loadTrackingList() {
   box.innerHTML = cards + fail + `<div class="px-3 pt-2 font-black text-sm">🔄 追蹤中（${d.live.length} 檔）</div>` + live +
     '<div class="px-3 py-2 text-xs text-muted">詳細分組見 GitHub 上的 tracking/us_summary.md</div>';
   try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
+  try { box.insertAdjacentHTML('afterbegin', await reboundHtml()); } catch (e) { /* 落底確認載入失敗不影響追蹤名單 */ }
+}
+
+// 大盤 RSI 底背離落底確認（觀察用）：美股綠漲紅跌；沒有資料一律顯示「—」
+async function reboundHtml() {
+  const d = await api('/api/rebound');
+  if (!d.ok) return '';
+  const cards = d.items.map(it => {
+    if (!it.ok) return `<div class="px-3 py-2 rounded-lg bg-input border border-theme"><b>${esc(it.name || it.symbol)}</b>：—（資料暫時抓不到）</div>`;
+    const crash = it.crash12 ? '回檔≥12%' : (it.crash8 ? '回檔≥8%' : (it.shock5 ? '急跌≥5%' : '未達大跌門檻'));
+    const dd = it.dd120 == null ? '—' : (it.dd120 > 0 ? '+' : '') + it.dd120.toFixed(1) + '%';
+    const st = it.stats.map(s => `<div class="text-sm">持有 ${s.h} 天（${s.n} 筆）：勝率 ${s.win == null ? '—' : s.win + '%'}｜平均 ${trkPct(s.avg)}｜中位數 ${trkPct(s.median)}</div>`).join('');
+    return `<div class="px-3 py-2 rounded-lg bg-input border border-theme">
+      <div class="flex justify-between font-black text-base"><span>${esc(it.name)}（至 ${esc(String(it.asof || '—'))}）</span><span>${it.div_today ? '🔔 今日底背離' : '今日無訊號'}</span></div>
+      <div class="text-sm mt-0.5">距120日高 <b>${dd}</b>｜近10日：<b>${crash}</b>｜RSI14 <b>${it.rsi == null ? '—' : Math.round(it.rsi)}</b></div>
+      <div class="text-sm">上次訊號：<b>${esc(String(it.last_signal || '—'))}</b>｜追蹤起始 ${esc(String(it.track_start || '—'))}</div>${st}</div>`;
+  }).join('');
+  return `<div class="px-3 pt-2 font-black text-sm">🧭 大盤落底確認（RSI 底背離・觀察用）</div>${cards}
+    <div class="px-3 pb-2 text-xs text-muted">美股回測：S&amp;P500／Nasdaq 前後半段皆勝過基準（5～10 日），但事件稀少（約每年 2～3 次）；此處只累積真實前瞻績效，滿 30 筆前僅供觀察，不作買進依據。隔日開盤進場、未扣成本。</div>`;
 }
 
 // LINE 推播績效：只統計收盤戰報實際推播的標的；美股綠漲紅跌；沒有資料一律顯示「—」
