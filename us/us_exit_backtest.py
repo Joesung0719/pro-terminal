@@ -23,7 +23,7 @@ import yfinance as yf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from us_scheduler import UNIVERSE as WATCHLIST  # noqa: E402
-from exit_sim import atr14, ma_flags, market_flag, strategies, simulate, report_md  # noqa: E402
+from exit_sim import atr14, ma_flags, market_flag, strategies, simulate, report_md, FILTER_EXITS  # noqa: E402
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(BASE, "backtest_reports")
@@ -97,6 +97,57 @@ def signals(df, mode, start_date):
     return out
 
 
+def ma_flag(index_df, period):
+    """指數收盤在 period 日均線之上（True）／之下（False）；均線尚未算得出來的日期為 NaN。"""
+    c = index_df["Close"]
+    ma = c.rolling(period, min_periods=period).mean()
+    return (c > ma).where(ma.notna())
+
+
+def load_index(sym, years):
+    df = yf.Ticker(sym).history(period=f"{years + 2}y", auto_adjust=True).dropna(subset=["Close"])
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
+    return df
+
+
+MKT_FILTERS = [("SPY 季線(60日)", "spy60"), ("SPY 200日線", "spy200"), ("QQQ 季線(60日)", "qqq60"), ("QQQ 200日線", "qqq200")]
+
+
+def market_filter_md(trades):
+    """大盤濾網驗證（只有多方）：大盤在均線上／下，同一批訊號的期望值差多少。給「要不要把大盤濾網接進推播」用。"""
+    lines = ["\n### 大盤濾網驗證（美股專用，多方；大盤＝SPY／QQQ 收盤相對均線）\n",
+             "同一批訊號，依訊號當天大盤在均線上／下分組。期望值為負才有理由在推播過濾；樣本年度集中時要小心。\n"]
+    rows = []
+    for label, col in MKT_FILTERS:
+        for state, val in (("上", True), ("下", False)):
+            sub = trades[trades[col] == val]
+            for ex in FILTER_EXITS:
+                g = sub[sub["strategy"] == ex]
+                r = g["ret"].values
+                if len(r) == 0:
+                    rows.append({"大盤": f"{label}{state}", "出場方式": ex, "n": 0})
+                    continue
+                win, loss = r[r > 0], r[r <= 0]
+                ym = g.groupby("year")["ret"].mean()
+                rows.append({"大盤": f"{label}{state}", "出場方式": ex, "n": len(r),
+                             "勝率%": round((r > 0).mean() * 100, 1), "期望值%": round(r.mean(), 2),
+                             "賺賠比": round(win.mean() / -loss.mean(), 2) if len(win) and len(loss) and loss.mean() < 0 else np.nan,
+                             "最差%": round(r.min(), 1), "賺錢年數": f"{int((ym > 0).sum())}/{len(ym)}"})
+    lines += ["```\n" + pd.DataFrame(rows).to_string(index=False) + "\n```"]
+    # 「下」組的年度分布：看是不是只靠某一兩年的急跌反彈
+    ex = FILTER_EXITS[1]
+    yr = []
+    for label, col in MKT_FILTERS:
+        g = trades[(trades[col] == False) & (trades["strategy"] == ex)]  # noqa: E712
+        if g.empty:
+            continue
+        t = g.groupby("year")["ret"].agg(["size", "mean"]).round(2)
+        yr.append(f"{label}下（{ex}）：" + "、".join(f"{y} n={int(r['size'])} 期望{r['mean']:+.2f}%" for y, r in t.iterrows()))
+    lines += ["\n各年度分布（大盤在均線下的訊號）：\n", "```\n" + "\n".join(yr) + "\n```"]
+    return "\n".join(lines) + "\n"
+
+
 def main():
     t0 = time.time()
     syms = load_universe()
@@ -106,9 +157,10 @@ def main():
         raise SystemExit(f"❌ 只下載到 {len(hist)}/{len(syms)} 檔，資料不完整，不產生報告")
     start_date = pd.Timestamp(datetime.date.today() - datetime.timedelta(days=int(365.25 * YEARS)))
     strats = strategies()
-    index_df = yf.Ticker("SPY").history(period=f"{YEARS + 2}y", auto_adjust=True).dropna(subset=["Close"])
-    if getattr(index_df.index, "tz", None) is not None:
-        index_df.index = index_df.index.tz_localize(None)
+    index_df = load_index("SPY", YEARS)
+    qqq_df = load_index("QQQ", YEARS)
+    mkt_series = {"spy60": ma_flag(index_df, 60), "spy200": ma_flag(index_df, 200),
+                  "qqq60": ma_flag(qqq_df, 60), "qqq200": ma_flag(qqq_df, 200)}
     os.makedirs(OUT_DIR, exist_ok=True)
     for mode in ("LONG", "SHORT"):
         mkt = market_flag(index_df, mode)
@@ -119,12 +171,16 @@ def main():
             f_qy, f_all = ma_flags(c, mode)
             for i, neck in signals(df, mode, start_date):
                 m = mkt.asof(df.index[i]) if len(mkt) else np.nan
+                extra = {}
+                for k, ser in mkt_series.items():
+                    v = ser.asof(df.index[i])
+                    extra[k] = None if pd.isna(v) else bool(v)
                 for name, p in strats:
                     r = simulate(i, mode, o, h, l, c, atr, neck, p, COST_PCT)
                     if r is not None:
                         recs.append({"strategy": name, "ret": r[0], "days": r[1], "reason": r[2],
                                      "year": df.index[i].year, "f_qy": bool(f_qy[i]), "f_all": bool(f_all[i]),
-                                     "f_mkt": None if pd.isna(m) else bool(m)})
+                                     "f_mkt": None if pd.isna(m) else bool(m), **extra})
         trades = pd.DataFrame(recs)
         label = "多方突破" if mode == "LONG" else "空方破底"
         n_sig = int((trades["strategy"] == strats[0][0]).sum()) if len(trades) else 0
@@ -136,6 +192,8 @@ def main():
                  f"- 訊號數：{n_sig} 筆（只計入之後還有滿 60 個交易日資料的訊號，各出場方式用同一批）",
                  f"- 成本：來回 {COST_PCT}%｜價格：還原權息｜停損觸發以停損價成交，跳空越過則以開盤價成交｜最長持有 60 天"]
         md = report_md(title, trades) if not trades.empty else "\n".join(title) + "\n\n暫無資料\n"
+        if mode == "LONG" and not trades.empty:
+            md += market_filter_md(trades)
         with open(os.path.join(OUT_DIR, f"us_exit_{mode}.md"), "w", encoding="utf-8") as f:
             f.write(md)
         print(md)

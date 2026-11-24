@@ -1,0 +1,42 @@
+# 大盤 RSI 底背離落底確認：每日收盤後記錄真實訊號與 5/10/20 日前瞻報酬（只觀察，不推播）
+# 21:45 UTC ＝ 美東夏令 17:45／冬令 16:45，兩者都已收盤；休市日沒有新K棒 → 只更新舊紀錄
+name: rebound-watch
+
+on:
+  schedule:
+    - cron: "45 21 * * 1-5"
+  workflow_dispatch:
+  push:
+    paths:
+      - "us/rebound_watch.py"
+      - ".github/workflows/rebound_watch.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebound-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas numpy yfinance tzdata
+      - run: |
+          python us/rebound_watch.py us
+          cat tracking/rebound_summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit tracking data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add tracking/rebound_*
+          git diff --cached --quiet && exit 0
+          git commit -m "Update rebound watch ($(TZ=America/New_York date +%F)) [skip render]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

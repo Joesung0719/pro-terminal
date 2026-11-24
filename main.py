@@ -774,6 +774,33 @@ def healthz():
     return {"ok": True, "version": APP_VERSION}
 
 
+def _risk_plan():
+    """載入 us/risk_plan.py（大盤狀態／移動停損階段／部位試算，與 LINE 推播共用同一份計算）。"""
+    import sys as _sys
+    d = os.path.join(_BASE_DIR, "us")
+    if d not in _sys.path:
+        _sys.path.insert(0, d)
+    import risk_plan as _rp
+    return _rp
+
+
+@app.get("/api/market/state")
+def get_market_state():
+    """SPY／QQQ 相對季線（60 日）與 200 日線；只標示狀態。抓不到就回 ok=False，畫面顯示「—」。"""
+    rp = _risk_plan()
+    try:
+        dfs = {s: fetch_history(s, "1d") for s in ("SPY", "QQQ")}
+        st = rp.market_state({k: v for k, v in dfs.items() if v is not None})
+    except Exception:
+        st = []
+    if not st:
+        return {"ok": False}
+    return {"ok": True, "label": rp.market_label(st), "items": [
+        {"symbol": m["symbol"], "close": round(m["close"], 2),
+         "q": m["q"] and {"above": m["q"]["above"], "dist": round(m["q"]["dist"], 1)},
+         "y": m["y"] and {"above": m["y"]["above"], "dist": round(m["y"]["dist"], 1)}} for m in st]}
+
+
 @app.get("/api/market/indices")
 def get_indices():
     def _load():
@@ -1002,6 +1029,17 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
 
         daily = raw if interval == "1d" else fetch_history(sym, "1d")
         w52 = week52_stats(daily)
+        plan, risk_cfg = None, None
+        try:   # 移動停損階段（%）：以日K最新收盤與 14 日 ATR 計算，資料不足時為 None
+            rp = _risk_plan()
+            px = _f(daily["Close"].iloc[-1], 0.0)
+            plan = rp.stop_plan(px, rp.atr_pct(daily))
+            risk_cfg = {"risk_pct": rp.RISK_PER_TRADE_PCT, "cap_pct": rp.TOTAL_RISK_CAP_PCT, "month_pct": rp.MONTH_STOP_PCT}
+            if plan:
+                plan = {"price": round(px, 2), **{k: (v if not isinstance(v, dict) else {a: round(b, 2) for a, b in v.items()})
+                                                  for k, v in plan.items()}}
+        except Exception:
+            plan = None
 
         _, show_n = HISTORY_PLAN[interval]
         v = df.tail(show_n)
@@ -1015,7 +1053,7 @@ def get_quote_data(symbol: str, interval: str = "1d", mode: str = "LONG", neck_d
             "ma20_val": ma20_val, "ma240_val": ma240_val,
             "neckline": neck, "neck_days": neck_days, "neck_unit": INTERVAL_UNIT[interval],
             "dist_neck": round(dist, 1), "quality_badge": badge,
-            "week52": w52,
+            "week52": w52, "plan": plan, "risk_cfg": risk_cfg,
             "dates": [d.strftime("%Y-%m-%d") for d in v.index],
             "opens": _series(v["Open"]), "highs": _series(v["High"]),
             "lows": _series(v["Low"]), "closes": _series(v["Close"]),
@@ -1279,6 +1317,110 @@ def get_tracking(mode: str = "LONG"):
             "live": live_rows}
 
 
+# ==============================================================================
+# 大盤 RSI 底背離落底確認（us/rebound_watch.py 每日收盤後寫入 tracking/rebound_*；觀察用，不進篩選與推播）
+#   先讀 GitHub 上的最新檔，讀不到再用本機檔；都沒有回傳 ok=False
+# ==============================================================================
+REBOUND_BASE_URL = os.environ.get("REBOUND_BASE_URL", "").strip() or \
+    "https://raw.githubusercontent.com/Joesung0719/pro-terminal/main/tracking/"
+
+
+def _load_rebound():
+    import io
+    import json as _json
+    status, sig = None, None
+    try:
+        r = requests.get(REBOUND_BASE_URL + "rebound_status.json", timeout=10)
+        if r.status_code == 200:
+            status = _json.loads(r.content.decode("utf-8"))
+        r = requests.get(REBOUND_BASE_URL + "rebound_signals.csv", timeout=10)
+        if r.status_code == 200 and r.text.strip():
+            sig = pd.read_csv(io.StringIO(r.content.decode("utf-8-sig")), dtype={"symbol": str})
+    except Exception:
+        pass
+    if status is None:
+        try:
+            with open(os.path.join(_BASE_DIR, "tracking", "rebound_status.json"), encoding="utf-8") as f:
+                status = _json.load(f)
+            sig = pd.read_csv(os.path.join(_BASE_DIR, "tracking", "rebound_signals.csv"), dtype={"symbol": str}, encoding="utf-8-sig")
+        except Exception:
+            pass
+    return status, sig
+
+
+@app.get("/api/rebound")
+def get_rebound():
+    try:
+        status, sig = cached(("rebound",), 600, _load_rebound)
+    except Exception:
+        status, sig = None, None
+    if not status:
+        return {"ok": False}
+    items = []
+    for sym, st in status.items():
+        g = sig[sig["symbol"] == sym] if sig is not None and len(sig) else None
+        stats = []
+        for h in (5, 10, 20):
+            a = pd.to_numeric(g[f"r{h}"], errors="coerce").dropna() if g is not None else pd.Series(dtype=float)
+            n = len(a)
+            stats.append({"h": h, "n": n, "win": _safe_round((a > 0).mean() * 100, 0) if n else None,
+                          "avg": _safe_round(a.mean()) if n else None,
+                          "median": _safe_round(a.median()) if n else None})
+        items.append({**{k: st.get(k) for k in ("name", "symbol", "ok", "asof", "dd120", "rsi", "crash8", "crash12",
+                                                   "shock5", "div_today", "last_signal", "track_start")}, "stats": stats})
+    return {"ok": True, "items": items}
+
+
+# ==============================================================================
+# LINE 推播績效（us/push_perf.py 每個交易日收盤後寫入 tracking/us_push_perf.csv；完整紀錄在 Google 試算表）
+#   一樣先讀 GitHub 上的最新檔，讀不到再用本機檔
+# ==============================================================================
+PUSH_PERF_URL = os.environ.get("PUSH_PERF_URL", "").strip() or \
+    "https://raw.githubusercontent.com/Joesung0719/pro-terminal/main/tracking/us_push_perf.csv"
+PUSH_PERF_FILE = os.path.join(_BASE_DIR, "tracking", "us_push_perf.csv")
+
+
+def _load_push_perf():
+    import io
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(_BASE_DIR, "us"))
+    import push_perf as _pp
+    try:
+        r = requests.get(PUSH_PERF_URL, timeout=10)
+        if r.status_code == 200 and r.text.strip():
+            return _pp.read_perf(io.StringIO(r.content.decode("utf-8-sig")))
+    except Exception:
+        pass
+    if os.path.exists(PUSH_PERF_FILE):
+        return _pp.read_perf(PUSH_PERF_FILE)
+    return None
+
+
+@app.get("/api/push_perf")
+def get_push_perf(mode: str = "LONG"):
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(_BASE_DIR, "us"))
+    import push_perf as _pp
+    mode = "SHORT" if mode == "SHORT" else "LONG"
+    try:
+        df = cached(("push_perf",), 600, _load_push_perf)
+    except Exception:
+        df = None
+    if df is None or df.empty or not (df["mode"] == mode).any():
+        return {"ok": False, "mode": mode}
+    grp = []
+    for title, g in _pp.groups(df, mode):
+        grp.append({"title": title, "n": int(len(g)),
+                    "stats": [{**s, "enough": s["n"] >= _pp.MIN_N} for s in _pp.horizon_stats(g)]})
+    g = df[df["mode"] == mode]
+    num = lambda v: _safe_round(pd.to_numeric(v, errors="coerce"))  # noqa: E731
+    recent = [{"symbol": r["symbol"], "name": r["name"], "date": str(r["date"]), "first": r["first"] == True,  # noqa: E712
+               "px": num(r["push_px"]), "r1": num(r["r1"]), "r5": num(r["r5"]), "r20": num(r["r20"]),
+               "days": int(pd.to_numeric(r["days_done"], errors="coerce") or 0)} for _, r in g.head(20).iterrows()]
+    return {"ok": True, "mode": mode, "start": str(df["date"].min()), "total": int(len(g)),
+            "days": int(g["date"].nunique()), "groups": grp, "recent": recent}
+
+
 @app.post("/api/line/push")
 def line_push(payload: PushPayload, x_push_pin: str = Header(default="")):
     if not ADMIN_PUSH_PIN:
@@ -1426,7 +1568,7 @@ select,input{color:var(--text-main);}
       <button onclick="toggleSettingsDrawer()" class="text-xs bg-card px-2.5 py-0.5 rounded border border-theme font-bold">⚙️ 設定</button>
       <button onclick="openChangeLogModal()" class="text-xs bg-card text-amber-500 px-2 py-0.5 rounded border border-amber-500/40 font-bold">📜 改版紀錄</button>
     </div>
-    <button onclick="fetchIndicesData()" class="bg-[#1e293b] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold">🔄 刷新溫度計</button>
+    <button onclick="fetchIndicesData();fetchMarketState()" class="bg-[#1e293b] text-white px-2 py-1 rounded border border-[#38bdf8]/40 text-xs font-bold">🔄 刷新溫度計</button>
   </div>
   <div class="grid grid-cols-5 grid-indices gap-1.5 text-sm font-mono">
     <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-muted font-bold">🏛️ 道瓊</span><span id="idx_dji" class="font-bold">--</span></div>
@@ -1435,6 +1577,7 @@ select,input{color:var(--text-main);}
     <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-muted font-bold">📊 標普</span><span id="idx_spx" class="font-bold">--</span></div>
     <div class="bg-input border border-theme px-2 py-1.5 rounded flex justify-between items-center"><span class="text-amber-500 font-bold">🔥 恐慌</span><span id="idx_vix" class="font-bold text-amber-500">--</span></div>
   </div>
+  <div id="marketState" class="text-sm font-bold px-2 py-1 rounded border border-theme bg-input">🧭 大盤狀態 —</div>
   <div id="statusBar" class="hidden text-xs px-2 py-1 rounded border"></div>
   <div id="settingsDrawer" class="hidden bg-input border border-theme rounded-lg p-3 mt-1.5 text-sm space-y-3">
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-theme pb-2">
@@ -1581,6 +1724,17 @@ select,input{color:var(--text-main);}
       <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1">
         <div class="flex justify-between"><span class="text-muted">現價 / 20MA</span><span id="spotDisplay" class="font-bold">-</span></div>
         <div class="flex justify-between"><span class="text-muted">停損參考</span><span id="stopLossDisplay" class="text-amber-500 font-bold">-</span></div>
+      </div>
+
+      <div class="bg-input p-2.5 rounded-lg border border-theme space-y-1.5">
+        <div class="font-black text-sm">📐 移動停損階段（% 以實際成交價計）</div>
+        <div id="planLines" class="text-sm leading-snug font-bold whitespace-pre-line">—</div>
+        <div class="flex items-center gap-2 pt-1">
+          <label for="capitalInput" class="text-muted text-xs whitespace-nowrap">本金 US$</label>
+          <input id="capitalInput" type="text" inputmode="decimal" placeholder="輸入本金才會算股數" oninput="onCapitalInput()" class="w-full bg-card border border-theme rounded p-1.5 font-bold text-sm">
+        </div>
+        <div id="sizeLine" class="text-sm font-bold text-amber-500 leading-snug">請輸入本金，才會算股數（不會預設數字）</div>
+        <div id="riskNote" class="text-xs text-muted leading-snug"></div>
       </div>
 
       <div class="bg-input p-2.5 rounded-lg border border-theme space-y-2">
@@ -1805,6 +1959,55 @@ async function fetchIndicesData() {
   } catch (e) { setStatus('指數載入失敗：' + e.message, true); }
 }
 
+async function fetchMarketState() {
+  const box = document.getElementById('marketState');
+  try {
+    const d = await api('/api/market/state');
+    if (!d.ok) { box.textContent = '🧭 大盤狀態 —（暫時抓不到）'; return; }
+    const ph = ms => ms ? `<span style="color:${ms.above ? '#1E7E5A' : '#C0392B'}">${ms.above ? '上' : '下'} ${ms.dist > 0 ? '+' : ''}${ms.dist}%</span>` : '—';
+    box.innerHTML = '🧭 ' + d.items.map(m => `${esc(m.symbol)} ${m.close.toLocaleString()}｜季線${ph(m.q)}｜200日線${ph(m.y)}`).join('　') +
+      `<div class="text-xs text-muted font-normal">${esc(d.label || '—')}｜僅標示，不過濾名單（美股回測：大盤在季線下期望值仍為正，不像台股為負）</div>`;
+  } catch (e) { box.textContent = '🧭 大盤狀態 —'; }
+}
+
+let currentPlan = null, currentRisk = null;
+function getCapital() {
+  try { const v = parseFloat(String(localStorage.getItem('us_capital') || '').replace(/,/g, '')); return v > 0 ? v : null; } catch (e) { return null; }
+}
+function onCapitalInput() {
+  const v = document.getElementById('capitalInput').value.trim();
+  try { localStorage.setItem('us_capital', v); } catch (e) {}
+  renderSizing();
+}
+function renderPlan(plan, risk, mode) {
+  currentPlan = plan; currentRisk = risk;
+  const el = document.getElementById('planLines');
+  if (mode === 'SHORT') { el.textContent = '空方破底：移動停損階段只提供多方（回測不支持放空）'; }
+  else if (!plan) { el.textContent = '— （日K資料不足，算不出 ATR）'; }
+  else {
+    el.textContent = [
+      `① 先設停損 −${plan.trail}%（約 $${plan.s0.stop_px.toFixed(2)}）`,
+      `② 漲 +${plan.s1.gain_pct}%（$${plan.s1.gain_px.toFixed(2)}）→ 停損上移到 ${plan.s1.stop_pct > 0 ? '+' : ''}${plan.s1.stop_pct}%`,
+      `③ 漲 +${plan.s2.gain_pct}%（$${plan.s2.gain_px.toFixed(2)}）→ 停損上移到成本（保本）`,
+      `④ 之後從最高收盤回落 ${plan.trail}% 出場，只升不降`].join('\n');
+  }
+  const inp = document.getElementById('capitalInput');
+  if (document.activeElement !== inp) { try { inp.value = localStorage.getItem('us_capital') || ''; } catch (e) {} }
+  renderSizing();
+}
+function renderSizing() {
+  const line = document.getElementById('sizeLine'), note = document.getElementById('riskNote');
+  const cap = getCapital(), plan = currentPlan, rk = currentRisk;
+  if (rk) note.textContent = `建議值：每筆最多虧本金 ${rk.risk_pct}%｜同時總風險上限 ${rk.cap_pct}%（最多 ${Math.floor(rk.cap_pct / rk.risk_pct)} 檔，同日標的高度相關）｜月虧 ${rk.month_pct}% 停手`;
+  if (!plan || !rk || currentRadarMode === 'SHORT') { line.textContent = '—'; return; }
+  if (!cap) { line.textContent = '請輸入本金，才會算股數（不會預設數字）'; return; }
+  const perShare = plan.price * plan.trail / 100;
+  const shares = Math.floor(cap * rk.risk_pct / 100 / perShare);
+  if (shares < 1) { line.textContent = `本金不足以在風險 ${rk.risk_pct}% 內買 1 股`; return; }
+  const val = shares * plan.price, risk = shares * perShare;
+  line.textContent = `部位：${shares} 股（$${Math.round(val).toLocaleString()}，占本金 ${(val / cap * 100).toFixed(0)}%）｜停損觸及虧 $${Math.round(risk).toLocaleString()}（${(risk / cap * 100).toFixed(2)}%）`;
+}
+
 function setListTab(tab) {
   listTab = tab;
   [['break','tab_break'],['high','tab_high'],['low','tab_low'],['track','tab_track']].forEach(([k, id]) => {
@@ -1890,6 +2093,8 @@ async function loadTrackingList() {
   if (!d.ok) {
     note.textContent = '';
     box.innerHTML = '<div class="p-4 text-center text-sm text-muted">暫無資料：追蹤名單從每個交易日收盤後開始累積，至少需要 2～3 個月才有參考價值。</div>';
+    try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
+  try { box.insertAdjacentHTML('afterbegin', await reboundHtml()); } catch (e) { /* 落底確認載入失敗不影響追蹤名單 */ }
     return;
   }
   note.textContent = `追蹤起始 ${d.start}｜${label} ${d.total} 筆、${d.days} 個交易日｜隔日開盤進場、扣成本、超額報酬＝減去 SPY 同期間${currentRadarMode === 'SHORT' ? '（空方取反向）' : ''}`;
@@ -1908,6 +2113,56 @@ async function loadTrackingList() {
     </div>`).join('') : '<div class="p-2 text-center text-sm text-muted">暫無資料</div>';
   box.innerHTML = cards + fail + `<div class="px-3 pt-2 font-black text-sm">🔄 追蹤中（${d.live.length} 檔）</div>` + live +
     '<div class="px-3 py-2 text-xs text-muted">詳細分組見 GitHub 上的 tracking/us_summary.md</div>';
+  try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
+  try { box.insertAdjacentHTML('afterbegin', await reboundHtml()); } catch (e) { /* 落底確認載入失敗不影響追蹤名單 */ }
+}
+
+// 大盤 RSI 底背離落底確認（觀察用）：美股綠漲紅跌；沒有資料一律顯示「—」
+async function reboundHtml() {
+  const d = await api('/api/rebound');
+  if (!d.ok) return '';
+  const cards = d.items.map(it => {
+    if (!it.ok) return `<div class="px-3 py-2 rounded-lg bg-input border border-theme"><b>${esc(it.name || it.symbol)}</b>：—（資料暫時抓不到）</div>`;
+    const crash = it.crash12 ? '回檔≥12%' : (it.crash8 ? '回檔≥8%' : (it.shock5 ? '急跌≥5%' : '未達大跌門檻'));
+    const dd = it.dd120 == null ? '—' : (it.dd120 > 0 ? '+' : '') + it.dd120.toFixed(1) + '%';
+    const st = it.stats.map(s => `<div class="text-sm">持有 ${s.h} 天（${s.n} 筆）：勝率 ${s.win == null ? '—' : s.win + '%'}｜平均 ${trkPct(s.avg)}｜中位數 ${trkPct(s.median)}</div>`).join('');
+    return `<div class="px-3 py-2 rounded-lg bg-input border border-theme">
+      <div class="flex justify-between font-black text-base"><span>${esc(it.name)}（至 ${esc(String(it.asof || '—'))}）</span><span>${it.div_today ? '🔔 今日底背離' : '今日無訊號'}</span></div>
+      <div class="text-sm mt-0.5">距120日高 <b>${dd}</b>｜近10日：<b>${crash}</b>｜RSI14 <b>${it.rsi == null ? '—' : Math.round(it.rsi)}</b></div>
+      <div class="text-sm">上次訊號：<b>${esc(String(it.last_signal || '—'))}</b>｜追蹤起始 ${esc(String(it.track_start || '—'))}</div>${st}</div>`;
+  }).join('');
+  return `<div class="px-3 pt-2 font-black text-sm">🧭 大盤落底確認（RSI 底背離・觀察用）</div>${cards}
+    <div class="px-3 pb-2 text-xs text-muted">美股回測：S&amp;P500／Nasdaq 前後半段皆勝過基準（5～10 日），但事件稀少（約每年 2～3 次）；此處只累積真實前瞻績效，滿 30 筆前僅供觀察，不作買進依據。隔日開盤進場、未扣成本。</div>`;
+}
+
+// LINE 推播績效：只統計收盤戰報實際推播的標的；美股綠漲紅跌；沒有資料一律顯示「—」
+async function pushPerfHtml() {
+  const label = currentRadarMode === 'LONG' ? '多方突破' : '空方破底';
+  const head = `<div class="px-3 pt-2 font-black text-base">📲 LINE 推播績效｜${label}</div>`;
+  const d = await api(`/api/push_perf?mode=${currentRadarMode}`);
+  if (!d.ok) return head + '<div class="p-3 text-sm text-muted">暫無資料：從收盤戰報開始記錄，每個交易日收盤後回填；D+20 至少要 1 個月後才有數字。</div><hr class="border-theme my-2">';
+  const note = `<div class="px-3 text-xs text-muted">起始 ${esc(d.start)}｜推播 ${d.total} 筆、${d.days} 天｜基準＝推播價（收盤），D+N＝之後第 N 個交易日收盤，未扣手續費${currentRadarMode === 'SHORT' ? '，空方下跌算賺' : ''}</div>`;
+  const [all, ...subs] = d.groups;
+  // 首日／延續：精簡表格（D+5 勝率、平均、最大回檔平均），避免手機上卡片太長
+  const sub = `<table class="w-full text-sm mt-1"><tr class="text-muted text-xs"><th class="text-left px-3">D+5</th><th class="text-left">勝率</th><th class="text-left">平均</th><th class="text-left">賺賠比</th><th class="text-left">最大回檔</th></tr>` +
+    subs.map(g => { const s = g.stats[1]; return `<tr class="font-bold"><td class="px-3 py-1">${esc(g.title.split('｜')[1] || g.title)}（${s.n}）</td><td>${s.win == null ? '—' : s.win + '%'}</td><td>${trkPct(s.avg)}</td><td>${s.ratio == null ? '—' : s.ratio.toFixed(2)}</td><td>${trkPct(s.mdd_avg)}</td></tr>`; }).join('') + '</table>';
+  const grp = [all].map(g => `
+    <div class="px-3 pt-2 font-bold text-sm">${esc(g.title)}（${g.n} 筆）</div>` + g.stats.map(s => `
+    <div class="px-3 py-2 rounded-lg bg-input border border-theme">
+      <div class="flex justify-between font-black text-base"><span>D+${s.h}</span><span>勝率 ${s.win == null ? '—' : s.win + '%'}</span></div>
+      <div class="text-sm mt-0.5">期望值（平均） ${trkPct(s.avg)}｜中位數 ${trkPct(s.median)}</div>
+      <div class="text-sm">平均賺 ${trkPct(s.avg_win)}｜平均賠 ${trkPct(s.avg_loss)}｜<b>賺賠比 ${s.ratio == null ? '—' : s.ratio.toFixed(2)}</b></div>
+      <div class="text-sm">最大回檔 平均 ${trkPct(s.mdd_avg)}｜最差 ${trkPct(s.mdd_worst)}</div>
+      <div class="text-xs text-muted">已完成 ${s.n} 筆${s.enough ? '' : '<span class="text-amber-500">｜⚠️ 樣本不足，僅供觀察</span>'}</div>
+    </div>`).join('')).join('');
+  const recent = d.recent.map(r => `
+    <div class="px-3 py-1.5 rounded-lg bg-input border border-theme cursor-pointer hover:opacity-80" onclick="fetchStockData('${esc(r.symbol)}')">
+      <div class="flex justify-between font-bold text-sm"><span>${esc(r.symbol)} <span class="text-xs text-muted">${r.name && r.name !== r.symbol ? esc(r.name) : ''}</span></span><span>${r.px == null ? '—' : '$' + r.px}</span></div>
+      <div class="text-xs text-muted">${esc(r.date.slice(5))}｜${r.first ? '首日' : '延續'}｜第 ${r.days}/20 天</div>
+      <div class="text-sm">D+1 ${trkPct(r.r1)}｜D+5 ${trkPct(r.r5)}｜D+20 ${trkPct(r.r20)}</div>
+    </div>`).join('');
+  return head + note + grp + sub + `<div class="px-3 pt-2 font-black text-sm">🧾 最近推播</div>` + recent +
+    '<div class="px-3 py-2 text-xs text-muted">完整紀錄在 Google 試算表（美股推播紀錄／美股績效／美股統計）</div><hr class="border-theme my-2">';
 }
 
 function renderWatchlist() {
@@ -2037,6 +2292,7 @@ async function fetchStockData(symbol) {
     const m20 = data.ma20_val != null ? '$' + data.ma20_val : '資料不足';
     document.getElementById('spotDisplay').innerText = `$${data.spot} (20MA: ${m20})`;
     document.getElementById('stopLossDisplay').innerText = `${data.neckline != null ? '頸線 $' + data.neckline : '—'} ／ 月線 ${m20}`;
+    renderPlan(data.plan, data.risk_cfg, currentRadarMode);
     const wt = document.getElementById('w52Tag'), w5 = data.week52;
     if (w5) {
       const flag = w5.close_new_high ? ' 🏔️收盤新高' : (w5.new_high ? ' 🏔️盤中新高' : (w5.new_low ? ' 🕳️創新低' : ''));
@@ -2531,6 +2787,7 @@ window.onload = () => {
   } catch (e) { setFontSize('large'); }
   if (isTouch) document.getElementById('touchHint').classList.remove('hidden');
   fetchIndicesData();
+  fetchMarketState();
   loadUniverseMeta().then(loadScreenerList);
   fetchStockData(currentSymbol);
 };
