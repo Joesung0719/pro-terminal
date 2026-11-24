@@ -9,7 +9,7 @@
 2) 單次執行模式（GitHub Actions cron、或手動測試）：
        python us_scheduler.py auto      # 依目前美東時間自動判斷該跑哪一階段，不在時段內就不動作
        python us_scheduler.py stage1    # 開盤後半小時
-       python us_scheduler.py stage2    # 午盤
+       python us_scheduler.py stage2    # 午盤（已停止排程，只留手動測試用）
        python us_scheduler.py stage3    # 收盤結算
        python us_scheduler.py test      # 只送一則測試訊息
        python us_scheduler.py flextest  # 送一張白頭海鵰卡片，確認卡片版推播正常
@@ -731,8 +731,6 @@ def auto():
         return
     if h == 10:
         stage1()
-    elif h == 12:
-        stage2()
     elif h == 16:
         stage3()
     else:
@@ -744,9 +742,8 @@ def run_daemon():
     sch = BlockingScheduler(timezone=ET)   # 以美東時間排程：夏令/冬令自動切換
     kw = dict(day_of_week="mon-fri", misfire_grace_time=900, coalesce=True)
     sch.add_job(stage1, "cron", hour=10, minute=0, **kw)
-    sch.add_job(stage2, "cron", hour=12, minute=30, **kw)
     sch.add_job(stage3, "cron", hour=16, minute=15, **kw)
-    log.info("🚀 美股三段式推播排程已啟動（美東 10:00 / 12:30 / 16:15，週一至週五）")
+    log.info("🚀 美股兩段式推播排程已啟動（美東 10:00 / 16:15，週一至週五；午盤已停推）")
     sch.start()
 
 
