@@ -2,6 +2,8 @@
 # 放在 repo 的 .github/workflows/us_push.yml（與 us_scheduler.py 同一個 repo、同一層）
 # 需要在 repo 的 Settings → Secrets and variables → Actions 新增：
 #   LINE_CHANNEL_TOKEN、LINE_USER_ID（必填）、US_APP_URL（選填，預設 https://pro-terminal.onrender.com）
+#   ACCOUNT_USD（選填，本金美元數字；沒設定就不顯示股數，不會用預設數字。建議放 Secrets，不要放公開的 Variables）
+#   RISK_PER_TRADE_PCT／TOTAL_RISK_CAP_PCT／MONTH_STOP_PCT（選填，預設 1／5／5，單位 %）
 # 排程用 UTC。夏令(3月中–11月初)美東=UTC-4、冬令=UTC-5，所以每個時段排兩個 UTC 時間，
 # 由 us_scheduler.py auto 依「美東當下幾點」只執行對的那一個，另一個自動略過。
 name: us-line-push
@@ -37,6 +39,10 @@ jobs:
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           US_APP_URL: ${{ secrets.US_APP_URL }}
           ASSET_BASE: ${{ secrets.ASSET_BASE }}
+          ACCOUNT_USD: ${{ secrets.ACCOUNT_USD }}
+          RISK_PER_TRADE_PCT: ${{ secrets.RISK_PER_TRADE_PCT }}
+          TOTAL_RISK_CAP_PCT: ${{ secrets.TOTAL_RISK_CAP_PCT }}
+          MONTH_STOP_PCT: ${{ secrets.MONTH_STOP_PCT }}
           # 推播績效追蹤寫入 Google 試算表（未設定時暫存 tracking/us_push_log.csv）
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           PUSH_SHEET_ID: ${{ secrets.PUSH_SHEET_ID }}

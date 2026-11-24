@@ -44,14 +44,16 @@ LOG_FIELDS = [("date", "日期"), ("time", "推播時間(美東)"), ("slot", "�
               ("dist", "距頸線%"), ("first", "首日突破"), ("rank", "卡片順位")]
 PERF_FIELDS = LOG_FIELDS + [("days_done", "已過交易日"), ("r1", "D+1%"), ("r5", "D+5%"), ("r20", "D+20%"),
                             ("mdd1", "D+1內最大回檔%"), ("mdd5", "D+5內最大回檔%"), ("mdd20", "D+20內最大回檔%"),
-                            ("r_last", "最新%")]
-STATS_FIELDS = [("group", "組別"), ("period", "期間"), ("n", "樣本"), ("win", "勝率%"), ("avg", "平均%"),
+                            ("r_last", "最新%"), ("mkt", "推播日大盤(SPY季線)")]
+STATS_FIELDS = [("group", "組別"), ("period", "期間"), ("n", "樣本"), ("win", "勝率%"), ("avg", "期望值(平均)%"),
+                ("avg_win", "平均賺%"), ("avg_loss", "平均賠%"), ("ratio", "賺賠比"),
                 ("median", "中位數%"), ("mdd_avg", "最大回檔平均%"), ("mdd_worst", "最大回檔最差%"), ("note", "備註")]
 LOG_COLS = [k for k, _ in LOG_FIELDS]
 PERF_COLS = [k for k, _ in PERF_FIELDS]
 LOG_NUM = {"push_px", "pct", "v_ratio", "neck", "dist", "rank"}
 PCT_KEYS = ("r1", "r5", "r20", "mdd1", "mdd5", "mdd20", "r_last")
 PERF_NUM = LOG_NUM | set(PCT_KEYS) | {"days_done"}
+MKT_UP, MKT_DOWN = "季線上", "季線下"
 
 
 def _r(v, nd=2):
@@ -159,6 +161,32 @@ def download(symbols, period="1y"):
     return data
 
 
+def market_flags():
+    """SPY 每個交易日收盤是否在季線（60 日）之上；回傳以日期為索引的布林 Series。抓不到回傳 None（分組欄留空）。"""
+    try:
+        import pandas as pd
+        import yfinance as yf
+        d = yf.Ticker("SPY").history(period="3y", auto_adjust=False).dropna(subset=["Close"])
+        if getattr(d.index, "tz", None) is not None:
+            d.index = d.index.tz_localize(None)
+        d.index = d.index.normalize()
+        ma = d["Close"].rolling(60, min_periods=60).mean()
+        return (d["Close"] > ma).where(ma.notna())
+    except Exception as e:
+        print(f"⚠️ 大盤資料抓不到，推播績效不分大盤狀態：{e}")
+        return None
+
+
+def mkt_label(flags, date):
+    import pandas as pd
+    if flags is None or flags.empty:
+        return ""
+    v = flags.get(pd.Timestamp(str(date)).normalize())   # 只取「推播當天」，沒有該日資料就留空，不往前湊
+    if v is None or pd.isna(v):
+        return ""
+    return MKT_UP if bool(v) else MKT_DOWN
+
+
 def compute_outcome(row: dict, df, today: str) -> dict:
     import pandas as pd
     out = {k: "" for k in ["r_last"] + [f"r{h}" for h in HORIZONS] + [f"mdd{h}" for h in HORIZONS]}
@@ -196,9 +224,17 @@ def horizon_stats(g):
         a = pd.to_numeric(g[f"r{h}"], errors="coerce").dropna()
         m = pd.to_numeric(g[f"mdd{h}"], errors="coerce").dropna()
         n = len(a)
+        wins, losses = a[a > 0], a[a <= 0]
+        avg_win = float(wins.mean()) if len(wins) else None
+        avg_loss = float(losses.mean()) if len(losses) else None
+        # 賺賠比＝平均賺 ÷ 平均賠（取絕對值）；沒有賺或沒有賠的樣本算不出來，回傳 None 顯示「—」
+        ratio = avg_win / -avg_loss if (avg_win is not None and avg_loss is not None and avg_loss < 0) else None
         res.append({"key": f"r{h}", "h": h, "n": n,
                     "win": round(float((a > 0).mean() * 100), 0) if n else None,
                     "avg": round(float(a.mean()), 2) if n else None,
+                    "avg_win": round(avg_win, 2) if avg_win is not None else None,
+                    "avg_loss": round(avg_loss, 2) if avg_loss is not None else None,
+                    "ratio": round(ratio, 2) if ratio is not None else None,
                     "median": round(float(a.median()), 2) if n else None,
                     "mdd_avg": round(float(m.mean()), 2) if len(m) else None,
                     "mdd_worst": round(float(m.min()), 2) if len(m) else None})
@@ -215,8 +251,11 @@ def read_perf(path_or_buf=PERF_CSV):
 def groups(perf, mode):
     g = perf[perf["mode"] == mode]
     lab = MODE_LABEL[mode]
-    return [(f"{lab}（全部）", g), (f"{lab}｜首日", g[g["first"] == True]),   # noqa: E712
-            (f"{lab}｜延續", g[g["first"] == False])]                          # noqa: E712
+    out = [(f"{lab}（全部）", g), (f"{lab}｜首日", g[g["first"] == True]),   # noqa: E712
+           (f"{lab}｜延續", g[g["first"] == False])]                          # noqa: E712
+    if "mkt" in g.columns:   # 依「推播當天 SPY 在季線上／下」分組；沒有大盤資料的舊紀錄不納入這兩組
+        out += [(f"{lab}｜大盤季線上", g[g["mkt"] == MKT_UP]), (f"{lab}｜大盤季線下", g[g["mkt"] == MKT_DOWN])]
+    return out
 
 
 def stats_rows(perf):
@@ -225,6 +264,7 @@ def stats_rows(perf):
         for title, g in groups(perf, mode):
             for s in horizon_stats(g):
                 rows.append({"group": title, "period": f"D+{s['h']}", "n": s["n"], "win": s["win"], "avg": s["avg"],
+                             "avg_win": s["avg_win"], "avg_loss": s["avg_loss"], "ratio": s["ratio"],
                              "median": s["median"], "mdd_avg": s["mdd_avg"], "mdd_worst": s["mdd_worst"],
                              "note": "" if s["n"] >= MIN_N or s["n"] == 0 else "樣本不足"})
     return rows
@@ -241,16 +281,20 @@ def build_summary(perf):
              f"- 起始：{perf['date'].min() if len(perf) else '—'}｜推播 {len(perf)} 筆｜推播天數 {perf['date'].nunique() if len(perf) else 0}",
              f"- 基準價＝推播價（收盤）；D+N＝之後第 N 個交易日收盤；{COST_NOTE}；還原權息校正；空方取反向。",
              "- 最大回檔＝D+N 內對部位最不利的價格相對推播價（平均／最差）。",
+             "- 賺賠比＝平均賺 ÷ 平均賠；期望值＝平均報酬（勝率×平均賺＋敗率×平均賠）。賺賠比小於 1 代表賺的時候比賠的時候少。",
+             f"- 大盤分組：推播當天 SPY 收盤在季線（60 日）之上＝「{MKT_UP}」、之下＝「{MKT_DOWN}」；抓不到大盤資料的紀錄不納入分組。",
              f"- 樣本少於 {MIN_N} 筆標示「樣本不足」。同一天的推播受同一個大盤影響，彼此不獨立。"]
     last = None
     for r in stats_rows(perf):
         if r["group"] != last:
             last = r["group"]
-            lines += [f"\n## {last}\n", "| 期間 | 樣本 | 勝率 | 平均 | 中位數 | 最大回檔 平均 | 最大回檔 最差 |",
-                      "|---|---|---|---|---|---|---|"]
+            lines += [f"\n## {last}\n", "| 期間 | 樣本 | 勝率 | 期望值(平均) | 平均賺 | 平均賠 | 賺賠比 | 中位數 | 最大回檔 平均 | 最大回檔 最差 |",
+                      "|---|---|---|---|---|---|---|---|---|---|"]
         win = "—" if r["win"] is None else f"{r['win']:.0f}%"
         tag = f" {r['note']}" if r["note"] else ""
-        lines.append(f"| {r['period']} | {r['n']}{tag} | {win} | {_p(r['avg'])} | {_p(r['median'])} | "
+        ratio = "—" if r["ratio"] is None else f"{r['ratio']:.2f}"
+        lines.append(f"| {r['period']} | {r['n']}{tag} | {win} | {_p(r['avg'])} | {_p(r['avg_win'])} | {_p(r['avg_loss'])} | "
+                     f"{ratio} | {_p(r['median'])} | "
                      f"{_p(r['mdd_avg'])} | {_p(r['mdd_worst'])} |")
     return "\n".join(lines) + "\n"
 
@@ -298,6 +342,8 @@ def main():
         row.update(compute_outcome(row, hist.get(r["symbol"]), today))
         rows.append(row)
     perf = pd.DataFrame(rows, columns=PERF_COLS)
+    flags = market_flags()
+    perf["mkt"] = [mkt_label(flags, d) for d in perf["date"]]
     perf["_r"] = pd.to_numeric(perf["rank"], errors="coerce")
     perf = perf.sort_values(["date", "mode", "_r"], ascending=[False, True, True]).drop(columns="_r")
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -310,8 +356,8 @@ def main():
             recs = perf.astype(object).where(perf.notna(), None).to_dict("records")
             sheet_store.replace_rows(TAB_PERF, PERF_FIELDS, recs, num_keys=PERF_NUM, pct_keys=PCT_KEYS, up=UP, down=DOWN)
             sheet_store.replace_rows(TAB_STATS, STATS_FIELDS, stats_rows(perf),
-                                     num_keys={"n", "win", "avg", "median", "mdd_avg", "mdd_worst"},
-                                     pct_keys=("avg", "median", "mdd_avg", "mdd_worst"), up=UP, down=DOWN)
+                                     num_keys={"n", "win", "avg", "avg_win", "avg_loss", "ratio", "median", "mdd_avg", "mdd_worst"},
+                                     pct_keys=("avg", "avg_win", "avg_loss", "median", "mdd_avg", "mdd_worst"), up=UP, down=DOWN)
             print("📤 試算表已更新")
         except Exception as e:
             print(f"⚠️ 試算表寫入失敗（repo 內 CSV 已更新）：{sheet_store.describe_error(e)}")
