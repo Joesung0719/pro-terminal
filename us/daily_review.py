@@ -16,7 +16,7 @@ UP, DOWN, MUTED, NAVY, INK, AMBER = "#1f7a3a", "#c0281e", "#5f5e5a", "#0b2a52", 
 BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tracking")
 TRACK_FILES = ("us_push_perf.csv", "us_push_log.csv")
 LOOKBACK_DAYS = 5
-MAX_PICK_ROWS = 8
+PICK_N = 3             # 最強、最弱各列幾檔
 SECTORS = [("XLK", "科技"), ("XLF", "金融"), ("XLE", "能源"), ("XLV", "醫療保健"), ("XLY", "非必需消費"),
            ("XLP", "必需消費"), ("XLI", "工業"), ("XLU", "公用事業"), ("XLB", "原物料"),
            ("XLRE", "房地產"), ("XLC", "通訊服務")]
@@ -130,6 +130,18 @@ def picks_rows(exp_date, rows=None):
     return dates, list(first.values())
 
 
+def split_best_worst(valid, key, fail_key, n=PICK_N):
+    """回傳 (最強 n 檔, 最弱 n 檔, 其餘檔數)。最弱：失敗者優先，再依損益由低到高；
+    檔數 ≤ 2n 時全列（依損益由高到低），不分最強最弱。"""
+    ranked = sorted(valid, key=lambda i: i[key], reverse=True)
+    if len(ranked) <= 2 * n:
+        return ranked, [], 0
+    best = ranked[:n]
+    pool = ranked[n:]
+    worst = sorted(pool, key=lambda i: (not i[fail_key], i[key]))[:n]
+    return best, worst, len(ranked) - 2 * n
+
+
 def picks_section(exp_date, data, rows=None):
     dates, picks = picks_rows(exp_date, rows)
     if not picks:
@@ -158,18 +170,27 @@ def picks_section(exp_date, data, rows=None):
                       "md", _col(avg), True))
     else:
         out.append(_t("今日報價暫無，無法計算後續表現（—）", color=MUTED))
-    items.sort(key=lambda i: (i["pnl"] is not None, i["date"], i["sym"]), reverse=True)
-    for i in items[:MAX_PICK_ROWS]:
+    best, worst, rest = split_best_worst(valid, "pnl", "failed")
+    def row(i):
         md = i["date"][5:].replace("-", "/")
         side = "多" if i["mode"] == "LONG" else "空"
-        if i["pnl"] is None:
-            out.append(_t(f"{md} {i['sym']}（{side}）今日報價 —", color=MUTED))
-            continue
         flag = "｜⚠️失敗" if i["failed"] else ("｜守住" if i["failed"] is False else "")
-        out.append(_t(f"{md} {i['sym']}（{side}）{i['px']:g}→{i['cur']:g}｜價 {i['move']:+.1f}%｜損益 {i['pnl']:+.1f}%{flag}",
-                      "md", _col(i["move"]), bool(i["failed"])))
-    if len(items) > MAX_PICK_ROWS:
-        out.append(_t(f"…其餘 {len(items) - MAX_PICK_ROWS} 檔請看戰情室", "sm", MUTED))
+        return _t(f"{md} {i['sym']}（{side}）{i['px']:g}→{i['cur']:g}｜價 {i['move']:+.1f}%｜損益 {i['pnl']:+.1f}%{flag}",
+                  "md", _col(i["move"]), bool(i["failed"]))
+    if best:
+        out.append(_t("最強" if worst else "全部", "md", INK, True, margin="sm"))
+        out += [row(i) for i in best]
+    if worst:
+        out.append(_t("最弱（突破／破底失敗者優先）", "md", INK, True, margin="sm"))
+        out += [row(i) for i in worst]
+    tail = []
+    if rest:
+        tail.append(f"其餘 {rest} 檔")
+    nq = len(items) - len(valid)
+    if nq:
+        tail.append(f"{nq} 檔今日報價 —")
+    if tail:
+        out.append(_t("、".join(tail) + "，請看戰情室", "sm", MUTED))
     out.append(_t("損益：多方＝價格漲跌；空方＝價格跌為正。顏色依價格漲跌（綠漲紅跌）。", "sm", MUTED))
     return out
 
