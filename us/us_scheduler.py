@@ -189,8 +189,10 @@ def _flex_market_card(state):
     for m in state:
         for label, ms in (("季線", m["q"]), ("200日線", m["y"])):
             color = MUTED if not ms else (UP if ms["above"] else DOWN)
-            left = f"{m['symbol']} {m['close']:,.2f}" if label == "季線" else ""
-            rows.append(_box("horizontal", [_t(left, "md", NAVY, True, flex=3),
+            # LINE 不接受空字串文字（會讓整張卡片 400 退回純文字），沒有左欄文字時改放空白區塊
+            left = (_t(f"{m['symbol']} {m['close']:,.2f}", "md", NAVY, True, flex=3) if label == "季線"
+                    else _box("vertical", [], flex=3))
+            rows.append(_box("horizontal", [left,
                                             _t(f"{label}{_ma_phrase(ms)}", "md", color, True, flex=3, align="end")]))
     lab = risk_plan.market_label(state)
     if lab:
@@ -573,11 +575,15 @@ def movers_text(rows, events=None):
     )
 
 
+LATE_MIN = 0   # GitHub 排程實際執行時間比預定晚幾分鐘（auto() 設定；>=90 分鐘時標題會註明延遲）
+
+
 def header_line():
     now_et = datetime.datetime.now(ET)
     now_tp = datetime.datetime.now(TPE)
     dst = "夏令" if bool(now_et.dst()) else "冬令"
-    return f"{dst}｜台北 {now_tp.strftime('%m/%d %H:%M')}／美東 {now_et.strftime('%H:%M')}"
+    late = f"｜⏱️排程延遲約 {LATE_MIN / 60:.1f} 小時" if LATE_MIN >= 90 else ""
+    return f"{dst}｜台北 {now_tp.strftime('%m/%d %H:%M')}／美東 {now_et.strftime('%H:%M')}{late}"
 
 
 def _stage1():
@@ -725,11 +731,17 @@ def auto():
                  sched, t.strftime("%m/%d %H:%M"), "夏令" if t.dst() else "冬令", now_et.strftime("%H:%M"))
     else:
         t = now_et
+    global LATE_MIN
+    LATE_MIN = max(0, int((now_et - t).total_seconds() // 60))
     h, wd = t.hour, t.weekday()
     if wd >= 5:
         log.info("週末，略過")
         return
     if h == 10:
+        # 過時保護：開盤半小時快報若拖到美東 11:00 之後才跑（GitHub 排程常嚴重延遲），內容已不是開盤初段，寧可不推
+        if now_et.date() != t.date() or now_et.hour >= 11:
+            log.warning("開盤半小時班次延遲至美東 %s，已過時，略過不推", now_et.strftime("%m/%d %H:%M"))
+            return
         stage1()
     elif h == 16:
         stage3()
