@@ -631,6 +631,25 @@ def _stage2():
     send_line_flex("美股多空雷達｜午盤戰報", bubble, text)
 
 
+def _review_box(longs, shorts, macro, ev):
+    """盤後每日覆盤區塊；任何錯誤回傳 None，不影響收盤戰報。"""
+    try:
+        import daily_review
+        syms = [r["symbol"] for r in longs[:TOP_N] + shorts[:TOP_N]]
+        # 近 5 個推播日的標的也要抓報價
+        _, past = daily_review.picks_rows("9999-12-31")
+        want = sorted({"SPY", "QQQ"} | {s for s, _ in daily_review.SECTORS} | {r["symbol"].strip() for r in past} | set(syms))
+        data = daily_review.fetch_daily(want)
+        spy = data.get("SPY")
+        if spy is None:
+            return None
+        exp_date = spy.index[-1].strftime("%Y-%m-%d")
+        return daily_review.build_review_box(exp_date, data, macro, ev, syms, NAME, NYSE_HOLIDAYS, CARD_LINE)
+    except Exception as e:
+        log.warning("每日覆盤略過：%s %s", type(e).__name__, e)
+        return None
+
+
 def build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro=None, ev=None, mstate=None, capital=None, alloc=None):
     ev = ev or {}
     body = [_flex_index_card(idx_rows, vix), _flex_market_card(mstate)]
@@ -641,6 +660,9 @@ def build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro=None, ev=Non
     body.append(_section_title(f"空方破底  共 {len(shorts)} 檔", DOWN))
     body += [_flex_pick_card(r, "SHORT", ev.get(r["symbol"])) for r in shorts[:TOP_N]] or [_card([_t("今日無符合條件之空方破底標的", "md", MUTED)])]
     body.append(_card([_t(x, "md", NAVY, True, margin="xs") for x in _risk_footer_lines(capital, alloc)]))
+    review = _review_box(longs, shorts, macro, ev)
+    if review:
+        body.append(review)
     body.append(_t(f"已掃描 {scanned}/{len(SYMBOLS)} 檔｜{NECK_DAYS}日頸線、量比≥{VOL_RATIO}x、收紅/黑K、站上/跌破月線",
                    "sm", MUTED, margin="lg"))
     return _flex_bubble("美股多空雷達｜收盤戰報", body, "僅為量化條件篩選結果，非投資建議")
