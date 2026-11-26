@@ -40,7 +40,16 @@ def load_membership():
         log("Wikipedia 表格數", len(tabs), [t.shape for t in tabs[:4]], "頁面長度", len(r.text))
         flat = lambda t: [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in t.columns]
         cur = next(t for t in tabs if any("Symbol" in c for c in flat(t)) and any("Date added" in c for c in flat(t)))
-        chg = next(t for t in tabs if any("Removed" in c for c in flat(t)) and any("Added" in c for c in flat(t)))
+        for q, t in enumerate(tabs[:6]):
+            log("  表", q, t.shape, flat(t)[:8])
+        try:
+            chg = next(t for t in tabs if any("Removed" in c for c in flat(t)) and any("Added" in c for c in flat(t)))
+        except StopIteration:
+            log("  主表找不到異動表，改用 match='Removed' 重抓；頁面含 Removed 次數", r.text.count("Removed"))
+            alt = pd.read_html(io.StringIO(r.text), match="Removed")
+            for q, t in enumerate(alt[:4]):
+                log("  alt表", q, t.shape, flat(t)[:8])
+            chg = alt[0]
         sym = [c for c in cur.columns if "Symbol" in str(c)][0]
         dcol = [c for c in cur.columns if "Date added" in str(c)][0]
         chg.columns = [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in chg.columns]
@@ -471,6 +480,7 @@ def main():
         L.append(f"| {lab} | {avail} | {np.mean([r['acc'] for r in res]):.0f} | {pc(np.median(tot), 1, True)} / {pc(tot[0], 1, True)} | {pc(np.median(tot) / years_span, 1, True)} | "
                  f"{pc(np.median(dd), 1)} / {pc(dd[0], 1)} | {pc(np.mean([r['avgexp'] for r in res]), 0)} | {pc(worst_y, 1, True)} |")
     L.append("")
+    L += ["<details><summary>執行紀錄</summary>", "", "```", *LOG[:60], "```", "</details>", ""]
     L.append(f"_執行 {time.time() - t0:.0f} 秒；資料 {len(data)} 檔；訊號 {len(S)} 筆。_")
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     open(OUT, "w", encoding="utf-8").write("\n".join(L))
