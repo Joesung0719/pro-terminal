@@ -42,16 +42,33 @@ def load_membership():
         cur = next(t for t in tabs if any("Symbol" in c for c in flat(t)) and any("Date added" in c for c in flat(t)))
         for q, t in enumerate(tabs[:6]):
             log("  表", q, t.shape, flat(t)[:8])
+        chg = None
         try:
             chg = next(t for t in tabs if any("Removed" in c for c in flat(t)) and any("Added" in c for c in flat(t)))
         except StopIteration:
-            log("  主表找不到異動表，改用 match='Removed' 重抓；頁面含 Removed 次數", r.text.count("Removed"))
-            alt = pd.read_html(io.StringIO(r.text), match="Removed")
-            for q, t in enumerate(alt[:4]):
-                log("  alt表", q, t.shape, flat(t)[:8])
-            chg = alt[0]
-        sym = [c for c in cur.columns if "Symbol" in str(c)][0]
-        dcol = [c for c in cur.columns if "Date added" in str(c)][0]
+            hdr = {"User-Agent": "Mozilla/5.0 (research backtest)"}
+            titles = ["List_of_S&P_500_component_changes", "Historical_components_of_the_S&P_500", "List_of_S&P_500_companies/Changes"]
+            try:
+                js = requests.get("https://en.wikipedia.org/w/api.php", params={"action": "query", "list": "search", "srsearch": "S&P 500 index components changes added removed", "format": "json", "srlimit": 8}, headers=hdr, timeout=30).json()
+                titles += [x["title"].replace(" ", "_") for x in js["query"]["search"]]
+            except Exception as e:
+                log("  搜尋失敗", repr(e)[:100])
+            log("  異動表候選頁：", titles)
+            for ti in titles:
+                try:
+                    rr = requests.get("https://en.wikipedia.org/wiki/" + ti, headers=hdr, timeout=40)
+                    if rr.status_code != 200:
+                        continue
+                    for t in pd.read_html(io.StringIO(rr.text)):
+                        fc = flat(t)
+                        if any("Removed" in c for c in fc) and any("Added" in c for c in fc) and len(t) > 50:
+                            chg = t; log("  找到異動表：", ti, t.shape, fc[:6]); break
+                except Exception as e:
+                    continue
+                if chg is not None:
+                    break
+            if chg is None:
+                raise RuntimeError("找不到成分股異動表")
         chg.columns = [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in chg.columns]
         cd = [c for c in chg.columns if "Date" in c][0]
         ca = [c for c in chg.columns if "Added" in c and "Ticker" in c][0]
