@@ -2196,6 +2196,7 @@ function renderDip() {
     <div class="text-sm mt-1">大盤 SPY：${spyLine}</div>
     ${panic ? '<div class="text-base font-black mt-1" style="color:#C0392B">⚠️ 大盤恐慌日（SPY 5日跌 ≥ ' + Math.abs(p.panic) + '%），風險高；仍照列，請自行決定</div>' : ''}
     <div class="text-sm mt-1"><b>回測 ${esc(st.period)}</b>（持有${p.hold}天）：勝率 <b>${st.win}%</b>｜平均 ${trkPct(st.avg)}｜超額 ${trkPct(st.excess)}${wy}</div>
+    <div class="text-sm">組合模擬（9.1萬美元、每筆風險1%）：年均約 ${trkPct(st.port_ann)}｜最大回撤約 ${st.port_dd}%（最差 ${st.port_dd_worst}%）</div>
     <div class="text-sm">恐慌日回測（持有10天版）：勝率 ${st.panic_win}%｜平均 ${trkPct(st.panic_avg)}｜停損率 ${st.panic_stop}%</div>
     <div class="text-xs text-muted mt-1">${esc(st.note)}。只是量化提示，不是買進建議。${cap ? '' : '<span class="text-amber-500">｜輸入「本金」才會算股數</span>'}</div>
   </div>`;

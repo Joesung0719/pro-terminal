@@ -703,6 +703,7 @@ def _dip_stats_lines():
     st = dip_scan.STATS
     wy = f"｜最差年度 {st['worst_year']} 平均 {st['worst_year_avg']:+.1f}%" if st.get("worst_year") else ""
     return [f"回測 {st['period']}（持有 {dip_scan.HOLD_DAYS} 天、3×ATR 停損）：勝率 {st['win']}%｜平均 {st['avg']:+.2f}%｜超額 {st['excess']:+.2f}%{wy}",
+            f"組合模擬（9.1萬美元、每筆風險1%）：年均約 {st['port_ann']:+.1f}%｜最大回撤約 {st['port_dd']:.0f}%（最差 {st['port_dd_worst']:.0f}%）",
             f"大盤恐慌日（SPY 5日跌≥5%）回測：勝率 {st['panic_win']}%｜平均 {st['panic_avg']:+.2f}%｜停損率 {st['panic_stop']}%（持有10天版）",
             f"※ {st['note']}"]
 
