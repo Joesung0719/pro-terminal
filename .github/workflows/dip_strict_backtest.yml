@@ -1,0 +1,36 @@
+# 抄底模式嚴格回測（一次性研究，不影響推播），輸出 backtest_reports/dip_strict_backtest.md
+name: dip-strict-backtest
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "us/dip_strict_backtest.py"
+      - ".github/workflows/dip_strict_backtest.yml"
+permissions:
+  contents: write
+concurrency:
+  group: dip-strict-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas numpy yfinance tzdata lxml html5lib beautifulsoup4
+      - run: |
+          python us/dip_strict_backtest.py
+          MODE=above200 python us/dip_strict_backtest.py
+          cat backtest_reports/dip_trend_pullback_backtest.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add backtest_reports/dip_strict_backtest.md backtest_reports/dip_trend_pullback_backtest.md
+          git diff --cached --quiet && exit 0
+          git commit -m "Dip strict backtest report [skip render]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

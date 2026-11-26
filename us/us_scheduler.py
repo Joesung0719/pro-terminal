@@ -31,6 +31,7 @@ import requests
 import yfinance as yf
 
 import risk_plan  # 大盤狀態／移動停損階段／部位試算（us/risk_plan.py）
+import dip_scan  # 抄底模式：上升趨勢拉回（us/dip_scan.py，網頁與推播共用）
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("us_scheduler")
@@ -65,6 +66,8 @@ WATCH_CORE = ["NVDA", "TSLA", "AAPL", "MSFT", "PLTR", "AMZN", "AMD", "SPY", "QQQ
 NECK_DAYS = int(os.environ.get("NECK_DAYS", "20"))
 VOL_RATIO = float(os.environ.get("VOL_RATIO", "1.2"))
 TOP_N = int(os.environ.get("TOP_N", "6"))
+DIP_TOP_N = int(os.environ.get("DIP_TOP_N", "5"))          # 收盤戰報最多列幾檔抄底標的（跌越深越前面）
+DIP_DEFAULT_CAPITAL = 91000.0                               # 沒設定 ACCOUNT_USD 時，抄底股數以 Joe 提供的約 91,000 美元試算（卡片會註明）
 
 
 # ------------------------------------------------------------------------------
@@ -650,7 +653,136 @@ def _review_box(longs, shorts, macro, ev):
         return None
 
 
-def build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro=None, ev=None, mstate=None, capital=None, alloc=None):
+# ------------------------------------------------------------------------------
+# 抄底模式｜上升趨勢拉回（收盤 > 200 日線、5 日跌 ≥ 10%；跌越深越前面）
+#   條件與回測見 us/dip_scan.py；只做提示與試算，由使用者自行決定要不要買
+# ------------------------------------------------------------------------------
+def _dip_universe():
+    import json
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "us_universe.json")
+    try:
+        rows = json.load(open(p, encoding="utf-8"))
+        syms = [str(r[0]).strip().upper().replace(".", "-") for r in rows if r and r[0]]
+    except Exception as e:
+        log.warning("抄底：讀不到 us_universe.json（%s），改用內建股票池", e)
+        syms = list(SYMBOLS)
+    return sorted(set(syms) | {"SPY"})
+
+
+def run_dip():
+    """回傳 {market, rows, scanned, capital, default_capital}；任何錯誤回 None（不影響原本推播）。"""
+    try:
+        syms = _dip_universe()
+        data = {}
+        for i in range(0, len(syms), 100):
+            batch = syms[i:i + 100]
+            for attempt in range(2):
+                try:
+                    raw = yf.download(" ".join(batch), period="1y", group_by="ticker", threads=True,
+                                      progress=False, auto_adjust=False)
+                    data.update(_split(raw, batch))
+                    break
+                except Exception as e:
+                    log.warning("抄底日K下載失敗（%d，第 %d 次）：%s", i, attempt + 1, e)
+                    time.sleep(2)
+        spy = data.pop("SPY", None)
+        if spy is None or len(data) < len(syms) * 0.6:
+            log.warning("抄底：資料不足（%d/%d）或缺 SPY，略過", len(data), len(syms))
+            return None
+        cap = risk_plan.account_usd()
+        use_cap = cap or DIP_DEFAULT_CAPITAL
+        res = dip_scan.scan(data, spy, NAME, use_cap)
+        res.update({"capital": use_cap, "default_capital": cap is None, "universe": len(syms) - 1})
+        return res
+    except Exception as e:
+        log.warning("抄底模式略過：%s", e)
+        return None
+
+
+def _dip_stats_lines():
+    st = dip_scan.STATS
+    wy = f"｜最差年度 {st['worst_year']} 平均 {st['worst_year_avg']:+.1f}%" if st.get("worst_year") else ""
+    return [f"回測 {st['period']}（持有 {dip_scan.HOLD_DAYS} 天、3×ATR 停損）：勝率 {st['win']}%｜平均 {st['avg']:+.2f}%｜超額 {st['excess']:+.2f}%{wy}",
+            f"組合模擬（9.1萬美元、每筆風險1%）：年均約 {st['port_ann']:+.1f}%｜最大回撤約 {st['port_dd']:.0f}%（最差 {st['port_dd_worst']:.0f}%）",
+            f"大盤恐慌日（SPY 5日跌≥5%）回測：勝率 {st['panic_win']}%｜平均 {st['panic_avg']:+.2f}%｜停損率 {st['panic_stop']}%（持有10天版）",
+            f"※ {st['note']}"]
+
+
+def _dip_pick_lines(r, panic):
+    sz = r.get("size")
+    lines = [f"{r['symbol']} {r.get('name') or ''} ${r['price']:.2f}｜5日 {r['ret5']:+.1f}%",
+             f"   距200日線 {r['dist200']:+.1f}%｜ATR {r['atr_pct']:.1f}%",
+             f"   🛑 停損 ${r['stop']:.2f}（{-r['stop_pct']:.1f}%，3×ATR）",
+             (f"   📐 {sz['shares']} 股（${sz['value']:,.0f}｜佔本金 {sz['value_pct']:.0f}%｜最大虧損約 ${sz['risk_usd']:,.0f}）" + ("（已受單檔20%上限）" if sz["capped"] else "")) if sz else "   📐 股數：—",
+             f"   ⏳ 建議持有 {dip_scan.HOLD_DAYS} 個交易日（約至 {r['exit_date'] or '—'}）"]
+    if panic:
+        lines.append("   ⚠️ 恐慌日，風險高")
+    return lines
+
+
+def _dip_head_text(dip):
+    m = dip["market"]
+    cap_txt = f"${dip['capital']:,.0f}" + ("（預設試算，未設定 ACCOUNT_USD）" if dip["default_capital"] else "")
+    ms = f"SPY 5日 {m['ret5']:+.1f}%｜{'在200日線上' if m['above200'] else '在200日線下'}" if m else "SPY：—"
+    return ms, cap_txt
+
+
+def _dip_text(dip):
+    if not dip:
+        return "\n━━ 抄底模式（上升趨勢拉回）━━\n今日資料不足，未計算"
+    ms, cap_txt = _dip_head_text(dip)
+    panic = bool(dip["market"] and dip["market"]["panic"])
+    rows = dip["rows"]
+    out = [f"\n━━ 抄底模式｜上升趨勢拉回（共 {len(rows)} 檔，顯示前 {min(len(rows), DIP_TOP_N)}）━━",
+           f"條件：收盤>200日線且5日跌≥{dip_scan.DROP_PCT:g}%，跌越深越前｜{ms}｜本金 {cap_txt}｜單筆風險 {dip_scan.RISK_PCT:g}%"]
+    if panic:
+        out.append("⚠️ 大盤恐慌日，風險高（仍照列，請自行決定）")
+    out += _dip_stats_lines()
+    if rows:
+        for r in rows[:DIP_TOP_N]:
+            out.append("\n".join(_dip_pick_lines(r, panic)))
+    else:
+        out.append("今日無符合條件之標的")
+    return "\n".join(out)
+
+
+def _flex_dip_section(dip):
+    """收盤卡片的抄底區；回傳 Flex 元素列表（資料不足時只給一張說明卡）。"""
+    out = [_section_title(f"抄底模式｜上升趨勢拉回  共 {len(dip['rows']) if dip else '—'} 檔", INFO)]
+    if not dip:
+        return out + [_card([_t("今日資料不足，未計算", "md", MUTED)])]
+    ms, cap_txt = _dip_head_text(dip)
+    panic = bool(dip["market"] and dip["market"]["panic"])
+    head = [_t(f"收盤>200日線且5日跌≥{dip_scan.DROP_PCT:g}%，跌越深越前", "md", NAVY, True),
+            _t(f"{ms}｜本金 {cap_txt}｜單筆風險 {dip_scan.RISK_PCT:g}%", "md", "#1a1a1a", margin="xs")]
+    if panic:
+        head.append(_t("⚠️ 大盤恐慌日，風險高（仍照列，請自行決定）", "lg", DOWN, True, margin="sm"))
+    head += [_t(x, "sm", MUTED, margin="xs") for x in _dip_stats_lines()]
+    out.append(_card(head))
+    for r in dip["rows"][:DIP_TOP_N]:
+        sz = r.get("size")
+        body = [
+            _box("horizontal", [
+                _t(f"{r['symbol']} {r.get('name') or ''}", "lg", NAVY, True, flex=5),
+                _t(f"${r['price']:.2f} ▼{abs(r['ret5']):.1f}%", "lg", DOWN, True, flex=5, align="end")]),
+            _t(f"距200日線 {r['dist200']:+.1f}%｜ATR {r['atr_pct']:.1f}%", "md", INFO, margin="sm"),
+            _t(f"🛑 停損 ${r['stop']:.2f}（{-r['stop_pct']:.1f}%，3×ATR）", "md", DOWN, True, margin="xs"),
+            _t((f"📐 {sz['shares']} 股｜${sz['value']:,.0f}｜佔本金 {sz['value_pct']:.0f}%｜最大虧損約 ${sz['risk_usd']:,.0f}" + ("（單檔20%上限）" if sz["capped"] else "")) if sz else "📐 股數：—",
+               "md", "#1a1a1a", margin="xs"),
+            _t(f"⏳ 建議持有 {dip_scan.HOLD_DAYS} 個交易日（約至 {r['exit_date'] or '—'}）", "md", "#444444", margin="xs"),
+        ]
+        if panic:
+            body.append(_t("⚠️ 恐慌日，風險高", "md", DOWN, True, margin="xs"))
+        out.append(_box("horizontal", [
+            _box("vertical", [], width="6px", backgroundColor=INFO),
+            _box("vertical", body, flex=1, paddingAll="12px"),
+        ], backgroundColor="#ffffff", cornerRadius="12px", borderWidth="1px", borderColor=CARD_LINE))
+    if not dip["rows"]:
+        out.append(_card([_t("今日無符合條件之標的", "md", MUTED)]))
+    return out
+
+
+def build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro=None, ev=None, mstate=None, capital=None, alloc=None, dip=None, dip_on=False):
     ev = ev or {}
     body = [_flex_index_card(idx_rows, vix), _flex_market_card(mstate)]
     if macro is not None or ev:
@@ -659,6 +791,11 @@ def build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro=None, ev=Non
     body += [_flex_pick_card(r, "LONG", ev.get(r["symbol"])) for r in longs[:TOP_N]] or [_card([_t("今日無符合條件之多方突破標的", "md", MUTED)])]
     body.append(_section_title(f"空方破底  共 {len(shorts)} 檔", DOWN))
     body += [_flex_pick_card(r, "SHORT", ev.get(r["symbol"])) for r in shorts[:TOP_N]] or [_card([_t("今日無符合條件之空方破底標的", "md", MUTED)])]
+    if dip_on:
+        try:
+            body += _flex_dip_section(dip)
+        except Exception as e:
+            log.warning("抄底卡片略過：%s", e)
     body.append(_card([_t(x, "md", NAVY, True, margin="xs") for x in _risk_footer_lines(capital, alloc)]))
     review = _review_box(longs, shorts, macro, ev)
     if review:
@@ -681,6 +818,11 @@ def _stage3():
     capital = risk_plan.account_usd()
     alloc = risk_plan.allocate(longs[:TOP_N], capital)   # 只對實際推播的多方標的試算；空方不做部位試算
     macro, ev = _get_events([r["symbol"] for r in longs[:TOP_N] + shorts[:TOP_N]])
+    dip = run_dip()                      # 抄底模式（上升趨勢拉回）；失敗回 None，不影響原本推播
+    try:
+        dip_txt = _dip_text(dip)
+    except Exception as e:
+        log.warning("抄底文字略過：%s", e); dip_txt = ""
     parts = [
         f"📊 【美股多空雷達 V9.9｜全日收盤戰報】\n{header_line()}\n",
         "\n".join(idx_lines) + (f"\n{vix_line}" if vix_line else ""),
@@ -690,12 +832,13 @@ def _stage3():
         "\n".join(fmt_pick(r, "LONG", ev) for r in longs[:TOP_N]) if longs else "今日無符合條件之多方突破標的",
         f"\n━━ 空方破底（共 {len(shorts)} 檔，顯示前 {min(len(shorts), TOP_N)}）━━",
         "\n".join(fmt_pick(r, "SHORT", ev) for r in shorts[:TOP_N]) if shorts else "今日無符合條件之空方破底標的",
+        dip_txt,
         "\n" + "\n".join(_risk_footer_lines(capital, alloc)),
         f"\n已掃描 {scanned}/{len(SYMBOLS)} 檔｜條件：{NECK_DAYS}日頸線、量比≥{VOL_RATIO}x、收紅/黑K、站上/跌破月線",
         "※ 僅為量化條件篩選結果，非投資建議。",
         f"👉 {APP_URL}",
     ]
-    bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro, ev, mstate, capital, alloc)
+    bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro, ev, mstate, capital, alloc, dip, True)
     ok = send_line_flex(f"美股多空雷達｜收盤戰報：多方 {len(longs)} 檔／空方 {len(shorts)} 檔", bubble, "\n".join(parts))
     # 推播績效追蹤：只記錄真的送達 LINE 的標的；任何錯誤都不影響推播
     if ok and (longs or shorts):
