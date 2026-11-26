@@ -943,6 +943,44 @@ def get_week52(kind: str = "high", sector: str = "ALL", near: float = 3.0):
             "universe": universe_status()}
 
 
+def _dip_mod():
+    """載入 us/dip_scan.py（抄底模式：上升趨勢拉回，與 LINE 收盤戰報共用同一份計算與回測數字）。"""
+    import sys as _sys
+    d = os.path.join(_BASE_DIR, "us")
+    if d not in _sys.path:
+        _sys.path.insert(0, d)
+    import dip_scan as _ds
+    return _ds
+
+
+@app.get("/api/dip")
+def get_dip(sector: str = "ALL"):
+    """抄底模式｜上升趨勢拉回：收盤>200日線且5日跌>=10%，跌越深越前。股數由網頁依本金欄位計算（不預設本金）。"""
+    ds = _dip_mod()
+    pool = _pool(sector)
+    data = load_universe_daily()
+    sub = {x["symbol"]: data[x["symbol"]] for x in pool if data.get(x["symbol"]) is not None}
+    failed = len(pool) - len(sub)
+    try:
+        spy = fetch_history("SPY", "1d")
+    except Exception:
+        spy = None
+    res = ds.scan(sub, spy, {x["symbol"]: x["name"] for x in pool}, None)
+    sec = {x["symbol"]: x["sector"] for x in pool}
+    m = res["market"]
+    rows = [{"symbol": r["symbol"], "name": r["name"], "sector": sec.get(r["symbol"]), "price": round(r["price"], 2),
+             "ret5": round(r["ret5"], 1), "dist200": round(r["dist200"], 1), "atr_pct": round(r["atr_pct"], 1),
+             "stop": round(r["stop"], 2), "stop_pct": round(r["stop_pct"], 1), "risk_ps": round(r["risk_ps"], 2),
+             "date": r["date"], "exit_date": r["exit_date"]} for r in res["rows"]]
+    session = us_session_label()
+    return {"ok": True, "rows": rows, "scanned": res["scanned"], "failed": failed,
+            "market": None if not m else {"ret5": round(m["ret5"], 1), "above200": m["above200"], "dist200": round(m["dist200"], 1),
+                                          "panic": m["panic"], "date": str(m["date"])[:10]},
+            "stats": ds.STATS, "params": {"drop": ds.DROP_PCT, "hold": ds.HOLD_DAYS, "atr_mult": ds.ATR_MULT,
+                                           "risk_pct": ds.RISK_PCT, "pos_cap": ds.POS_CAP_PCT, "panic": ds.PANIC_SPY5},
+            "partial": session == "盤中", "session": session, "universe": universe_status()}
+
+
 @app.get("/api/debug/{symbol}")
 def debug_symbol(symbol: str):
     """診斷：直接對 Yahoo 做一次請求並回報真實錯誤，用來查「無期權合約」這類問題。"""
@@ -1608,11 +1646,12 @@ select,input{color:var(--text-main);}
 <div id="mainLayout" class="flex flex-1 overflow-hidden">
   <aside id="leftSidebar" class="w-80 bg-card border-r border-theme flex flex-col shrink-0">
     <div class="p-3 border-b border-theme space-y-2">
-      <div class="grid grid-cols-4 gap-1 text-xs font-bold">
+      <div class="grid grid-cols-5 gap-1 text-xs font-bold">
         <button id="tab_break" onclick="setListTab('break')" class="py-1.5 rounded bg-[#234E70] text-white">🚀 突破榜</button>
         <button id="tab_high" onclick="setListTab('high')" class="py-1.5 rounded bg-input text-muted">🏔️ 52週新高</button>
         <button id="tab_low" onclick="setListTab('low')" class="py-1.5 rounded bg-input text-muted">🕳️ 52週新低</button>
         <button id="tab_track" onclick="setListTab('track')" class="py-1.5 rounded bg-input text-muted">📊 追蹤</button>
+        <button id="tab_dip" onclick="setListTab('dip')" class="py-1.5 rounded bg-input text-muted">🩸 抄底</button>
       </div>
       <div id="breakModeBox">
         <label class="text-xs text-muted font-bold block mb-1">🎯 選股多空方向：</label>
@@ -1978,6 +2017,7 @@ function onCapitalInput() {
   const v = document.getElementById('capitalInput').value.trim();
   try { localStorage.setItem('us_capital', v); } catch (e) {}
   renderSizing();
+  if (listTab === 'dip') renderDip();
 }
 function renderPlan(plan, risk, mode) {
   currentPlan = plan; currentRisk = risk;
@@ -2010,7 +2050,7 @@ function renderSizing() {
 
 function setListTab(tab) {
   listTab = tab;
-  [['break','tab_break'],['high','tab_high'],['low','tab_low'],['track','tab_track']].forEach(([k, id]) => {
+  [['break','tab_break'],['high','tab_high'],['low','tab_low'],['track','tab_track'],['dip','tab_dip']].forEach(([k, id]) => {
     document.getElementById(id).className = 'py-1.5 rounded ' + (k === tab ? 'bg-[#234E70] text-white' : 'bg-input text-muted');
   });
   document.getElementById('breakModeBox').classList.toggle('hidden', tab !== 'break' && tab !== 'track');
@@ -2064,6 +2104,10 @@ async function loadScreenerList() {
     try { await loadTrackingList(); } catch (e) { note.textContent = ''; setStatus('追蹤名單載入失敗：' + e.message, true); }
     return;
   }
+  if (listTab === 'dip') {
+    try { await loadDipList(); } catch (e) { note.textContent = ''; setStatus('抄底名單載入失敗：' + e.message, true); }
+    return;
+  }
   if (listTab !== 'break') {
     try { await loadWeek52List(); } catch (e) { note.textContent = ''; setStatus('52週榜單載入失敗：' + e.message, true); }
     return;
@@ -2115,6 +2159,58 @@ async function loadTrackingList() {
     '<div class="px-3 py-2 text-xs text-muted">詳細分組見 GitHub 上的 tracking/us_summary.md</div>';
   try { box.insertAdjacentHTML('afterbegin', await pushPerfHtml()); } catch (e) { /* 推播績效載入失敗不影響追蹤名單 */ }
   try { box.insertAdjacentHTML('afterbegin', await reboundHtml()); } catch (e) { /* 落底確認載入失敗不影響追蹤名單 */ }
+}
+
+
+// 抄底模式｜上升趨勢拉回：美股綠漲紅跌（下跌＝紅）；股數依「本金」欄位計算，沒填本金就不算（不預設數字）
+function dipShares(r, cap, p) {
+  if (!cap || cap <= 0 || !(r.risk_ps > 0)) return null;
+  const byRisk = Math.floor(cap * p.risk_pct / 100 / r.risk_ps), byCap = Math.floor(cap * p.pos_cap / 100 / r.price);
+  const sh = Math.max(0, Math.min(byRisk, byCap));
+  return {sh, val: sh * r.price, pct: sh * r.price / cap * 100, risk: sh * r.risk_ps, capped: byCap < byRisk};
+}
+let dipLast = null;
+async function loadDipList() {
+  const note = document.getElementById('screenerNote');
+  const d = await api(`/api/dip?sector=${currentSector}`);
+  dipLast = d;
+  universeData = [];
+  renderDip();
+  let t = `已掃描 ${d.scanned} 檔`;
+  if (d.failed) t += `，${d.failed} 檔取不到資料`;
+  if (d.partial) t += '｜盤中：以當下價計算，收盤後才是定案';
+  if (d.universe && !d.universe.ready) t = `⏳ 股票池資料載入中（${d.universe.loaded}/${d.universe.total}），結果尚不完整｜` + t;
+  note.textContent = t;
+}
+function renderDip() {
+  const box = document.getElementById('watchlist');
+  const d = dipLast;
+  if (!d || listTab !== 'dip') return;
+  const p = d.params, st = d.stats, m = d.market, cap = getCapital();
+  const panic = !!(m && m.panic);
+  const wy = st.worst_year ? `｜最差年度 ${st.worst_year} 平均 ${st.worst_year_avg > 0 ? '+' : ''}${st.worst_year_avg}%` : '';
+  const spyLine = m ? `5日 <b style="color:${m.ret5 >= 0 ? '#1E7E5A' : '#C0392B'}">${m.ret5 > 0 ? '+' : ''}${m.ret5}%</b>｜${m.above200 ? '在200日線上' : '<b style="color:#C0392B">在200日線下</b>'}` : '—';
+  const head = `<div class="px-3 py-2 rounded-lg bg-input border border-theme">
+    <div class="font-black text-base">🩸 抄底模式｜上升趨勢拉回</div>
+    <div class="text-sm">收盤＞200日線，且5日跌 ≥ ${p.drop}%；跌越深排越前。停損＝進場價−${p.atr_mult}×ATR，建議持有 ${p.hold} 個交易日。</div>
+    <div class="text-sm mt-1">大盤 SPY：${spyLine}</div>
+    ${panic ? '<div class="text-base font-black mt-1" style="color:#C0392B">⚠️ 大盤恐慌日（SPY 5日跌 ≥ ' + Math.abs(p.panic) + '%），風險高；仍照列，請自行決定</div>' : ''}
+    <div class="text-sm mt-1"><b>回測 ${esc(st.period)}</b>（持有${p.hold}天）：勝率 <b>${st.win}%</b>｜平均 ${trkPct(st.avg)}｜超額 ${trkPct(st.excess)}${wy}</div>
+    <div class="text-sm">恐慌日回測（持有10天版）：勝率 ${st.panic_win}%｜平均 ${trkPct(st.panic_avg)}｜停損率 ${st.panic_stop}%</div>
+    <div class="text-xs text-muted mt-1">${esc(st.note)}。只是量化提示，不是買進建議。${cap ? '' : '<span class="text-amber-500">｜輸入「本金」才會算股數</span>'}</div>
+  </div>`;
+  const rows = d.rows.map(r => {
+    const z = dipShares(r, cap, p);
+    const shLine = z ? `📐 <b>${z.sh}</b> 股｜$${Math.round(z.val).toLocaleString()}｜佔本金 ${z.pct.toFixed(0)}%｜最大虧損約 $${Math.round(z.risk).toLocaleString()}${z.capped ? '（單檔20%上限）' : ''}` : '📐 股數：輸入本金後顯示';
+    return `<div class="px-3 py-2 rounded-lg bg-input border border-theme cursor-pointer hover:opacity-80" onclick="fetchStockData('${esc(r.symbol)}')">
+      <div class="flex justify-between font-black text-base"><span>${esc(r.symbol)} <span class="text-xs text-muted">${esc(r.name || '')}</span></span><span style="color:#C0392B">$${r.price.toFixed(2)} ▼${Math.abs(r.ret5)}%</span></div>
+      <div class="text-sm">距200日線 +${r.dist200}%｜ATR ${r.atr_pct}%</div>
+      <div class="text-sm font-bold" style="color:#C0392B">🛑 停損 $${r.stop.toFixed(2)}（−${r.stop_pct}%）</div>
+      <div class="text-sm">${shLine}</div>
+      <div class="text-sm text-muted">⏳ 建議持有 ${p.hold} 個交易日（約至 ${esc(String(r.exit_date || '—'))}）${panic ? ' <b style="color:#C0392B">⚠️ 恐慌日，風險高</b>' : ''}</div>
+    </div>`;
+  }).join('') || '<div class="p-4 text-center text-sm text-muted">今日沒有符合條件的標的</div>';
+  box.innerHTML = head + `<div class="px-3 pt-2 font-black text-sm">共 ${d.rows.length} 檔</div>` + rows;
 }
 
 // 大盤 RSI 底背離落底確認（觀察用）：美股綠漲紅跌；沒有資料一律顯示「—」
