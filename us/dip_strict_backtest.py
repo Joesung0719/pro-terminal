@@ -479,6 +479,7 @@ def main():
         return out + [""]
     L += ["## 7. 分年度（🐻＝明顯空頭／大跌年；每年獨立事件很少，單年不要過度解讀）", ""]
     L += yearly("基準：時點成分股，收盤買、3×ATR 盤中停損、10 天", mb, B)
+    L += yearly("基準但持有 20 天（抄底模式採用）", mb, get(base_e, base_stop, 20))
     L += yearly("等止跌K（收紅且未破低）進場", mb, A)
     L += yearly("基準 ＋ 僅 SPY 在 200 日線上", mb & S["bull"].values, B)
     L += yearly("基準 ＋ 僅 SPY 在 200 日線下", mb & ~S["bull"].values, B)
@@ -488,7 +489,7 @@ def main():
           "損益以固定本金 91,000 計（不複利），回撤＝每日以收盤盯市的權益曲線，含持有期間浮虧。", "",
           "| 組別 | 可用訊號 | 平均實際下單 | 總損益（中位／最差種子） | 年均損益 | 最大回撤（中位／最差） | 平均資金使用率 | 最差年度損益 |", "|---|---|---|---|---|---|---|---|"]
     years_span = (last_day - pd.Timestamp("2004-09-01")).days / 365.25
-    port_rows = [("基準（收盤買、3ATR 盤中停損、10天）", mb, B), ("等止跌K（收紅且未破低）", mb, A),
+    port_rows = [("基準但持有 20 天", mb, get(base_e, base_stop, 20)), ("基準（收盤買、3ATR 盤中停損、10天）", mb, B), ("等止跌K（收紅且未破低）", mb, A),
                  ("基準 ＋ SPY>200日線", mb & S["bull"].values, B), ("基準 ＋ SPY≤200日線", mb & ~S["bull"].values, B),
                  ("基準 ＋ 大盤5日跌<5%", mb & (S["spy5"].values > -0.05), B)]
     for lab, mk, s in port_rows:
