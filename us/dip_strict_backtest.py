@@ -37,7 +37,10 @@ def load_membership():
         r = requests.get(WIKI, headers={"User-Agent": "Mozilla/5.0 (research backtest)"}, timeout=40)
         r.raise_for_status()
         tabs = pd.read_html(io.StringIO(r.text))
-        cur, chg = tabs[0], tabs[1]
+        log("Wikipedia 表格數", len(tabs), [t.shape for t in tabs[:4]], "頁面長度", len(r.text))
+        flat = lambda t: [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in t.columns]
+        cur = next(t for t in tabs if any("Symbol" in c for c in flat(t)) and any("Date added" in c for c in flat(t)))
+        chg = next(t for t in tabs if any("Removed" in c for c in flat(t)) and any("Added" in c for c in flat(t)))
         sym = [c for c in cur.columns if "Symbol" in str(c)][0]
         dcol = [c for c in cur.columns if "Date added" in str(c)][0]
         chg.columns = [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in chg.columns]
@@ -65,7 +68,7 @@ def load_membership():
                 members.setdefault(t, []).append((max(s, st0), d)); nrem += 1
         return members, current, f"Wikipedia 成分股表：目前 {len(current)} 檔、{START[:4]} 年後移出事件 {nrem} 筆"
     except Exception as e:
-        log("Wikipedia 失敗：", repr(e))
+        import traceback; log("Wikipedia 失敗：", repr(e)); traceback.print_exc()
         import json
         p = os.path.join(BASE, "us_universe.json")
         u = [norm(x[0]) for x in json.load(open(p, encoding="utf-8"))] if os.path.exists(p) else []
