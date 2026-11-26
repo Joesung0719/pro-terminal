@@ -1,1 +1,2 @@
 tracking/us_push_log.csv merge=union
+tracking/us_push_sent.txt merge=union

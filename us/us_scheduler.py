@@ -578,6 +578,37 @@ def movers_text(rows, events=None):
     )
 
 
+# ------------------------------------------------------------------------------
+# 同日同班去重：外部準時觸發（cron-job.org）與 GitHub 備援排程可能各跑一次，只推先到的那次
+#   記錄在 tracking/us_push_sent.txt（每行「美東日期 open|close」，.gitattributes 設 merge=union）
+#   只在 auto／open／close 這類自動入口啟用；手動 stage1／stage3／test 不去重
+# ------------------------------------------------------------------------------
+SENT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tracking", "us_push_sent.txt")
+DEDUP = False
+
+
+def _already_sent(slot: str) -> bool:
+    if not DEDUP:
+        return False
+    key = f"{datetime.datetime.now(ET).date().isoformat()} {slot}"
+    try:
+        with open(SENT_FILE, encoding="utf-8") as f:
+            return key in {ln.strip() for ln in f}
+    except FileNotFoundError:
+        return False
+
+
+def _mark_sent(slot: str):
+    if not DEDUP:
+        return
+    try:
+        os.makedirs(os.path.dirname(SENT_FILE), exist_ok=True)
+        with open(SENT_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now(ET).date().isoformat()} {slot}\n")
+    except Exception as e:
+        log.warning("去重紀錄寫入失敗（不影響推播）：%s", e)
+
+
 LATE_MIN = 0   # GitHub 排程實際執行時間比預定晚幾分鐘（auto() 設定；>=90 分鐘時標題會註明延遲）
 
 
@@ -594,6 +625,9 @@ def _stage1():
     if not market_open_today():
         log.info("今天美股休市，略過 stage1")
         return
+    if _already_sent("open"):
+        log.info("今天開盤半小時戰報已推過，本次不重複推播")
+        return
     rows = intraday_moves(WATCH_CORE)
     top = sorted(rows, key=lambda x: abs(x["vs_prev"]), reverse=True)[:TOP_N]
     macro, ev = _get_events([r["symbol"] for r in top])
@@ -606,7 +640,8 @@ def _stage1():
     body = _macro_block(macro) + [_section_title("核心觀察股（波動最大）", NAVY)]
     body += [_flex_mover_card(r, ev.get(r["symbol"])) for r in top] or [_card([_t("暫無分時資料（Yahoo 可能延遲），請看戰情室", "md", MUTED)])]
     bubble = _flex_bubble("美股多空雷達｜開盤半小時", body, "早盤波動大，避免追價｜僅供量化輔助監控")
-    send_line_flex("美股多空雷達｜開盤半小時戰報", bubble, text)
+    if send_line_flex("美股多空雷達｜開盤半小時戰報", bubble, text):
+        _mark_sent("open")
 
 
 def _stage2():
@@ -810,6 +845,9 @@ def _stage3():
     if not market_open_today():
         log.info("今天美股休市，略過 stage3")
         return
+    if _already_sent("close"):
+        log.info("今天收盤戰報已推過，本次不重複推播")
+        return
     idx_rows, vix = index_data()
     idx_lines, vix_line = index_summary(idx_rows, vix)
     longs, scanned = run_screen("LONG")
@@ -840,6 +878,8 @@ def _stage3():
     ]
     bubble = build_close_bubble(idx_rows, vix, longs, shorts, scanned, macro, ev, mstate, capital, alloc, dip, True)
     ok = send_line_flex(f"美股多空雷達｜收盤戰報：多方 {len(longs)} 檔／空方 {len(shorts)} 檔", bubble, "\n".join(parts))
+    if ok:
+        _mark_sent("close")
     # 推播績效追蹤：只記錄真的送達 LINE 的標的；任何錯誤都不影響推播
     if ok and (longs or shorts):
         try:
@@ -888,6 +928,8 @@ def _intended_et(schedule: str):
 def auto():
     """依美東時間決定階段；給 GitHub Actions 這類「固定 UTC 時間觸發」的排程使用。
     夏令/冬令由 America/New_York 時區自動判斷，每年不用手動改。"""
+    global DEDUP
+    DEDUP = True
     sched = os.environ.get("SCHEDULE", "").strip()
     t = _intended_et(sched) if sched else None
     now_et = datetime.datetime.now(ET)
@@ -914,6 +956,28 @@ def auto():
         log.info("預定美東 %02d 點不在推播時段（另一個季節用的班次），略過", h)
 
 
+def run_slot(slot: str):
+    """外部準時觸發（cron-job.org → workflow_dispatch slot=open|close）。
+    直接指定班次，不看鐘點，所以觸發被延遲也不會被判成「不在推播時段」；但保留過時保護與去重。"""
+    global DEDUP, LATE_MIN
+    DEDUP = True
+    now_et = datetime.datetime.now(ET)
+    if slot == "open":
+        if now_et.hour >= 11:   # 與 auto() 相同：開盤半小時快報超過美東 11:00 才跑就不推
+            log.warning("開盤半小時班次延遲至美東 %s，已過時，略過不推", now_et.strftime("%m/%d %H:%M"))
+            return
+        LATE_MIN = max(0, (now_et.hour - 10) * 60 + now_et.minute - 5)
+        stage1()
+    elif slot == "close":
+        if now_et.hour < 16:
+            log.warning("收盤班次在美東 %s 就被觸發（尚未收盤），略過不推", now_et.strftime("%m/%d %H:%M"))
+            return
+        LATE_MIN = max(0, (now_et.hour - 16) * 60 + now_et.minute - 20)
+        stage3()
+    else:
+        log.error("未知班次：%s（只接受 open／close）", slot)
+
+
 def run_daemon():
     from apscheduler.schedulers.blocking import BlockingScheduler
     sch = BlockingScheduler(timezone=ET)   # 以美東時間排程：夏令/冬令自動切換
@@ -930,6 +994,8 @@ if __name__ == "__main__":
         run_daemon()
     elif cmd == "auto":
         auto()
+    elif cmd in ("slot-open", "slot-close"):
+        run_slot(cmd.split("-", 1)[1])
     elif cmd == "stage1":
         stage1()
     elif cmd == "stage2":
