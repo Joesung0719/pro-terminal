@@ -69,6 +69,8 @@ def load_membership():
                     break
             if chg is None:
                 raise RuntimeError("找不到成分股異動表")
+        sym = [c for c in cur.columns if "Symbol" in str(c)][0]
+        dcol = [c for c in cur.columns if "Date added" in str(c)][0]
         chg.columns = [" ".join(map(str, c)) if isinstance(c, tuple) else str(c) for c in chg.columns]
         cd = [c for c in chg.columns if "Date" in c][0]
         ca = [c for c in chg.columns if "Added" in c and "Ticker" in c][0]
