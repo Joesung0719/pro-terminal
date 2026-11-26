@@ -1,0 +1,35 @@
+# 抄底多單停損檢討（一次性分析，不影響推播），輸出 backtest_reports/dip_stop_review.md
+name: dip-stop-review
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "us/dip_stop_review.py"
+      - ".github/workflows/dip_stop_review.yml"
+permissions:
+  contents: write
+concurrency:
+  group: dip-stop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas numpy yfinance tzdata
+      - run: |
+          python us/dip_stop_review.py
+          cat backtest_reports/dip_stop_review.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git add backtest_reports/dip_stop_review.md
+          git diff --cached --quiet && exit 0
+          git commit -m "Dip stop review report [skip render]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
