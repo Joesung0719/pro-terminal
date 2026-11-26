@@ -10,7 +10,12 @@
 #   每個交易日只推開盤半小時與收盤兩則（午盤已停推）。
 #   夏令 EDT：開盤半小時 14:05、收盤 20:20 UTC（台北 22:05／04:20）
 #   冬令 EST：開盤半小時 15:05、收盤 21:20 UTC（台北 23:05／05:20）
+#
+# 【備援】主要由外部排程（cron-job.org）準時呼叫 workflow_dispatch（slot=open|close）觸發，
+# 見 docs/external-trigger-setup.md。GitHub 內建 cron 常延遲數小時，只留作備援：
+# 同日同班已推過會自動跳過（tracking/us_push_sent.txt），不會重複。
 name: us-line-push
+run-name: us-line-push ${{ github.event.inputs.slot || github.event_name }}
 
 on:
   schedule:
@@ -23,6 +28,15 @@ on:
       cmd:
         description: "手動執行：test / stage1 / stage3 / auto（stage2 午盤已停排程，只供測試）"
         default: "test"
+      slot:
+        description: "外部準時觸發用：open=開盤半小時、close=收盤；有填就忽略上面的 cmd"
+        type: string
+        default: ""
+
+# 同一時間只跑一個（外部觸發與備援同時啟動時排隊，後到的看到已推過就跳過）
+concurrency:
+  group: us-line-push
+  cancel-in-progress: false
 
 # 收盤戰報推播後把「推播了哪幾檔」寫進 tracking/us_push_log.csv 並提交（推播績效追蹤用）
 permissions:
@@ -52,7 +66,10 @@ jobs:
           # 推播績效追蹤寫入 Google 試算表（未設定時暫存 tracking/us_push_log.csv）
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           PUSH_SHEET_ID: ${{ secrets.PUSH_SHEET_ID }}
-        run: python us/us_scheduler.py ${{ github.event.inputs.cmd || 'auto' }}
+          SLOT: ${{ github.event.inputs.slot }}
+          CMD: ${{ github.event.inputs.cmd }}
+        run: |
+          if [ -n "$SLOT" ]; then python us/us_scheduler.py "slot-$SLOT"; else python us/us_scheduler.py "${CMD:-auto}"; fi
 
       # 推播紀錄只新增不修改；.gitattributes 設定 merge=union，和其他排程同時提交也不會衝突
       # 這一步失敗不影響已送出的推播
@@ -62,7 +79,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
-          git add tracking/us_push_log.csv 2>/dev/null || exit 0
+          git add tracking/us_push_log.csv tracking/us_push_sent.txt 2>/dev/null || git add tracking/us_push_sent.txt 2>/dev/null || git add tracking/us_push_log.csv 2>/dev/null || exit 0
           git diff --cached --quiet && exit 0
           # [skip render]：只是資料更新，不觸發 Render 重新部署
           git commit -m "Record US LINE push ($(TZ=America/New_York date '+%F %H:%M')) [skip render]"
