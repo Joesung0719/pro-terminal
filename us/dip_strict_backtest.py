@@ -8,7 +8,8 @@ import os, io, sys, time, datetime as dt
 import numpy as np, pandas as pd, requests
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(BASE, "backtest_reports", "dip_strict_backtest.md")
+MODE = os.environ.get("MODE", "below60")      # below60＝收盤<季線；above200＝收盤>200日線（上升趨勢中的拉回）
+OUT = os.path.join(BASE, "backtest_reports", "dip_strict_backtest.md" if MODE == "below60" else "dip_trend_pullback_backtest.md")
 SYNTH = os.environ.get("SYNTH") == "1"
 START = "2003-06-01"
 FIRST_SIG = pd.Timestamp("2004-09-01")
@@ -168,10 +169,11 @@ def build_signals(data, kinds, last_day):
         cs = df["Close"]; n = len(df)
         ret5 = (cs / cs.shift(5) - 1).values
         sma = cs.rolling(60).mean().values
+        sma200 = cs.rolling(200).mean().values
         pc = cs.shift(1)
         tr = pd.concat([df.High - df.Low, (df.High - pc).abs(), (df.Low - pc).abs()], axis=1).max(axis=1)
         atr = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean().values
-        ok = (ret5 <= -0.08) & (c < sma) & ~np.isnan(atr) & (atr > 0) & (atr / c < 0.25) & (df.index >= FIRST_SIG)
+        ok = (ret5 <= -0.08) & ((c < sma) if MODE == "below60" else (c > sma200)) & ~np.isnan(atr) & (atr > 0) & (atr / c < 0.25) & (df.index >= FIRST_SIG)
         ii = np.flatnonzero(ok)
         if len(ii) == 0:
             continue
@@ -403,7 +405,7 @@ def main():
     L = [f"# 抄底模式｜嚴格回測（{dt.datetime.now(dt.timezone.utc):%Y-%m-%d %H:%M} UTC）", "",
          "只回測，未改雷達／推播／篩選。數據：yfinance 還原權息日線，抓不到一律「—」。", "",
          "## 規則與設定",
-         "- 訊號（收盤後已知）：個股 5 日跌幅 ≥ 門檻（預設 10%）且收盤 < 60 日均線（季線）。標的＝S&P 500 時點成分股。",
+         ("- 訊號（收盤後已知）：個股 5 日跌幅 ≥ 門檻（預設 10%）且收盤 < 60 日均線（季線）。標的＝S&P 500 時點成分股。" if MODE == "below60" else "- 訊號（收盤後已知）：【上升趨勢拉回】個股 5 日跌幅 ≥ 門檻（此版預設仍用 10% 為基準列，另列 8%/12%/15%）且收盤 > 200 日均線。標的＝S&P 500 時點成分股。"),
          f"- 預設基準：訊號日收盤買進 → 最長持有 10 個交易日 → 停損＝進場價 − 3×ATR14（盤中觸價；跳空越過以開盤價成交）。來回成本 {COST * 100:.1f}%。",
          "- 同股票訊號 10 個交易日內只算第 1 次（冷卻）。「訊號日數 / 獨立事件」＝不同訊號日數／相隔 >10 天才算新的一波行情（事件）；⚠＝獨立事件 <30，結論參考性低。",
          "- 期望值(R)＝平均報酬 ÷ 停損距離（1R＝單筆風險 1%）。超額於SPY＝同進出場期間 SPY 報酬扣除後。t值為同一波行情內訊號群聚校正後。",

@@ -23,12 +23,13 @@ jobs:
       - run: pip install requests pandas numpy yfinance tzdata lxml html5lib beautifulsoup4
       - run: |
           python us/dip_strict_backtest.py
-          cat backtest_reports/dip_strict_backtest.md >> "$GITHUB_STEP_SUMMARY"
+          MODE=above200 python us/dip_strict_backtest.py
+          cat backtest_reports/dip_trend_pullback_backtest.md >> "$GITHUB_STEP_SUMMARY"
       - name: Commit report
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
-          git add backtest_reports/dip_strict_backtest.md
+          git add backtest_reports/dip_strict_backtest.md backtest_reports/dip_trend_pullback_backtest.md
           git diff --cached --quiet && exit 0
           git commit -m "Dip strict backtest report [skip render]"
           git pull --rebase origin "${GITHUB_REF_NAME}"
