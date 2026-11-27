@@ -1157,12 +1157,30 @@ def _num(x):
         return None
 
 
+NO_OPTIONS_MSG = "此標的目前無上市期權（Cboe 與 Yahoo 皆查無合約）"
+
+
+def _cboe_reachable() -> bool:
+    """對照組：用 SPY 測 Cboe 端點是否可連。結果快取 5 分鐘。"""
+    def _probe():
+        r = requests.get("https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        return r.status_code == 200
+    return bool(cached(("cboe_probe",), 300, _probe, cache_empty=True))
+
+
 def _cboe_options(sym: str):
     """Cboe 公開延遲報價：回傳 {到期日: {"calls": [...], "puts": [...]}}。
     欄位缺值一律保持 None；IV 單位不確定時(>=10 視為異常)寧可不用也不猜。"""
     def _load():
         r = requests.get(f"https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json",
                          headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        if r.status_code in (403, 404):
+            # Cboe 對「沒有掛牌期權的代號」也回 403/404（檔案不存在）。
+            # 用對照組(SPY)確認：SPY 正常 → 代表此代號真的沒有期權；SPY 也失敗 → 才是來源被擋。
+            if _cboe_reachable():
+                raise ValueError(NO_OPTIONS_MSG)
+            raise ValueError("期權資料來源暫時無法連線（Cboe 與 Yahoo 皆失敗），請稍後重試")
         r.raise_for_status()
         opts = ((r.json() or {}).get("data") or {}).get("options") or []
         out = {}
@@ -1219,8 +1237,17 @@ def get_option_expirations(symbol: str):
     sym = clean_symbol(symbol)
     exps = _expirations(sym)
     if not exps:
-        why = _LAST_ERR.get(("exps", sym)) or _LAST_ERR.get(("cboe", sym))
-        msg = ("取得到期日失敗：" + why) if why else "Yahoo 與 Cboe 都沒有此標的的期權合約（可能該標的沒有掛牌期權）"
+        cb = _LAST_ERR.get(("cboe", sym)) or ""
+        why = _LAST_ERR.get(("exps", sym)) or cb
+        if NO_OPTIONS_MSG in cb:
+            why = cb
+        elif "暫時無法連線" in cb:
+            why = cb
+        if why and NO_OPTIONS_MSG in why:
+            return {"expirations": [], "no_options": True, "error": NO_OPTIONS_MSG}
+        if why and "暫時無法連線" in why:
+            return {"expirations": [], "error": "期權資料來源暫時無法連線，請稍後重試"}
+        msg = ("取得到期日失敗：" + why) if why else NO_OPTIONS_MSG
         return {"expirations": [], "error": msg + f"｜可開 /api/debug/{sym} 查看原因"}
     src = _OPT_SRC.get(sym, "yahoo")
     r, r_src = risk_free_rate()   # 前端推薦履約價時算 Delta 用
