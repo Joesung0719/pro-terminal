@@ -1017,6 +1017,18 @@ def debug_symbol(symbol: str):
         raw["cboe_sample_options"] = ((j.get("data") or {}).get("options") or [])[100:102]
     except Exception as e:
         raw["cboe_sample_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    for host in _CBOE_HOSTS:
+        try:
+            r = requests.get(f"{host}/api/global/delayed_quotes/options/{sym}.json", headers=_BROWSER_HEADERS, timeout=15)
+            raw["cboe_hdr_" + host.split("//")[1]] = {"status": r.status_code, "bytes": len(r.content), "head": r.text[:120].replace("\n", " ")}
+        except Exception as e:
+            raw["cboe_hdr_" + host.split("//")[1]] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    try:
+        rr = requests.get(f"https://api.nasdaq.com/api/quote/{sym}/option-chain", params={"assetclass": "stocks", "limit": 5},
+                          headers={**_BROWSER_HEADERS, "Referer": "https://www.nasdaq.com/"}, timeout=15)
+        raw["nasdaq"] = {"status": rr.status_code, "bytes": len(rr.content), "head": rr.text[:160].replace("\n", " ")}
+    except Exception as e:
+        raw["nasdaq"] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
     out["raw_probe"] = raw
     out["recent_cache_errors"] = {str(k): v for k, v in list(_LAST_ERR.items())[-10:]}
     return out
@@ -1143,7 +1155,8 @@ def get_next_earnings(symbol: str):
 # ==============================================================================
 _OPT_SRC = {}          # sym -> "yahoo" | "cboe"，標示這檔目前用哪個資料來源
 _OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
-_SRC_LABEL = {"yahoo": "Yahoo Finance", "cboe": "Cboe 延遲報價（約延遲 15 分鐘）"}
+_SRC_LABEL = {"yahoo": "Yahoo Finance", "cboe": "Cboe 延遲報價（約延遲 15 分鐘）",
+              "nasdaq": "Nasdaq 延遲報價（無 IV，Delta 推薦不可用）"}
 
 
 def _num(x):
@@ -1157,15 +1170,34 @@ def _num(x):
         return None
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.cboe.com/",
+    "Origin": "https://www.cboe.com",
+}
+_CBOE_HOSTS = ("https://cdn.cboe.com", "https://cdn-api.cboe.com")
+
+
+def _cboe_get(sym: str):
+    """依序試 Cboe 兩個主機，帶完整瀏覽器標頭；回傳第一個 200 的 Response，否則回傳最後一個回應。"""
+    last = None
+    for host in _CBOE_HOSTS:
+        r = requests.get(f"{host}/api/global/delayed_quotes/options/{sym}.json", headers=_BROWSER_HEADERS, timeout=20)
+        if r.status_code == 200:
+            return r
+        last = r
+    return last
+
+
 NO_OPTIONS_MSG = "此標的目前無上市期權（Cboe 與 Yahoo 皆查無合約）"
 
 
 def _cboe_reachable() -> bool:
     """對照組：用 SPY 測 Cboe 端點是否可連。結果快取 5 分鐘。"""
     def _probe():
-        r = requests.get("https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json",
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        return r.status_code == 200
+        return _cboe_get("SPY").status_code == 200
     return bool(cached(("cboe_probe",), 300, _probe, cache_empty=True))
 
 
@@ -1173,14 +1205,13 @@ def _cboe_options(sym: str):
     """Cboe 公開延遲報價：回傳 {到期日: {"calls": [...], "puts": [...]}}。
     欄位缺值一律保持 None；IV 單位不確定時(>=10 視為異常)寧可不用也不猜。"""
     def _load():
-        r = requests.get(f"https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json",
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        r = _cboe_get(sym)
         if r.status_code in (403, 404):
             # Cboe 對「沒有掛牌期權的代號」也回 403/404（檔案不存在）。
             # 用對照組(SPY)確認：SPY 正常 → 代表此代號真的沒有期權；SPY 也失敗 → 才是來源被擋。
             if _cboe_reachable():
                 raise ValueError(NO_OPTIONS_MSG)
-            raise ValueError("期權資料來源暫時無法連線（Cboe 與 Yahoo 皆失敗），請稍後重試")
+            raise ValueError(f"Cboe 來源被拒絕(HTTP {r.status_code})")
         r.raise_for_status()
         opts = ((r.json() or {}).get("data") or {}).get("options") or []
         out = {}
@@ -1211,6 +1242,52 @@ def _cboe_options(sym: str):
     return cached(("cboe", sym), 120, _load)
 
 
+def _nasdaq_options(sym: str):
+    """備援：Nasdaq 公開期權鏈。無 IV 欄位(一律 None，不猜)；缺值保持 None/0。"""
+    def _load():
+        r = requests.get(
+            f"https://api.nasdaq.com/api/quote/{sym}/option-chain",
+            params={"assetclass": "stocks", "limit": 5000, "fromdate": "all", "todate": "all",
+                    "excode": "oprac", "callput": "callput", "money": "all", "type": "all"},
+            headers={**_BROWSER_HEADERS, "Referer": "https://www.nasdaq.com/", "Origin": "https://www.nasdaq.com"},
+            timeout=25)
+        r.raise_for_status()
+        rows = (((r.json() or {}).get("data") or {}).get("table") or {}).get("rows") or []
+        today = et_now().strftime("%Y-%m-%d")
+        out, cur = {}, None
+        def _p(v):
+            try:
+                v = str(v).replace(",", "").replace("$", "").strip()
+                return None if v in ("", "--", "N/A") else float(v)
+            except Exception:
+                return None
+        for row in rows:
+            grp = row.get("expirygroup")
+            if grp:                                  # 到期日分組列，例如 "December 5, 2026"
+                try:
+                    cur = datetime.datetime.strptime(str(grp).strip(), "%B %d, %Y").strftime("%Y-%m-%d")
+                except Exception:
+                    cur = None
+                continue
+            k = _p(row.get("strike"))
+            if cur is None or cur < today or k is None or k <= 0:
+                continue
+            d = out.setdefault(cur, {"calls": [], "puts": []})
+            for side, pre in (("calls", "c_"), ("puts", "p_")):
+                d[side].append({
+                    "strike": k, "bid": _p(row.get(pre + "Bid")) or 0.0, "ask": _p(row.get(pre + "Ask")) or 0.0,
+                    "last": _p(row.get(pre + "Last")) or 0.0, "impliedVolatility": None,
+                    "volume": int(_p(row.get(pre + "Volume")) or 0),
+                    "openInterest": int(_p(row.get(pre + "Openinterest")) or 0),
+                })
+        for v in out.values():
+            v["calls"].sort(key=lambda x: x["strike"]); v["puts"].sort(key=lambda x: x["strike"])
+        if not out:
+            raise ValueError("Nasdaq 回傳中沒有有效合約")
+        return out
+    return cached(("nasdaq", sym), 120, _load)
+
+
 def _expirations(sym: str):
     """先試 Yahoo；Yahoo 回空或出錯就改用 Cboe。兩者都不是猜的，來源會回報給前端。"""
     def _load():
@@ -1226,6 +1303,10 @@ def _expirations(sym: str):
         if c:
             _OPT_SRC[sym] = "cboe"
             return sorted(c.keys())
+        n = _nasdaq_options(sym)
+        if n:
+            _OPT_SRC[sym] = "nasdaq"
+            return sorted(n.keys())
         if yerr:
             raise yerr
         return []
@@ -1241,12 +1322,11 @@ def get_option_expirations(symbol: str):
         why = _LAST_ERR.get(("exps", sym)) or cb
         if NO_OPTIONS_MSG in cb:
             why = cb
-        elif "暫時無法連線" in cb:
-            why = cb
         if why and NO_OPTIONS_MSG in why:
             return {"expirations": [], "no_options": True, "error": NO_OPTIONS_MSG}
-        if why and "暫時無法連線" in why:
-            return {"expirations": [], "error": "期權資料來源暫時無法連線，請稍後重試"}
+        if "被拒絕" in cb or "暫時無法連線" in cb:
+            return {"expirations": [], "error": "期權資料來源暫時無法連線（Yahoo／Cboe／Nasdaq 皆失敗），請稍後重試"
+                    + f"｜可開 /api/debug/{sym} 查看原因"}
         msg = ("取得到期日失敗：" + why) if why else NO_OPTIONS_MSG
         return {"expirations": [], "error": msg + f"｜可開 /api/debug/{sym} 查看原因"}
     src = _OPT_SRC.get(sym, "yahoo")
@@ -1265,8 +1345,8 @@ def get_option_chain(symbol: str, exp: str, spot: float = 0.0):
         return not (spot > 0 and not (spot * 0.5 <= k <= spot * 1.5))
 
     def _load():
-        if src == "cboe":
-            c = _cboe_options(sym) or {}
+        if src in ("cboe", "nasdaq"):
+            c = (_cboe_options(sym) if src == "cboe" else _nasdaq_options(sym)) or {}
             d = c.get(exp) or {"calls": [], "puts": []}
             return {"puts": [r for r in d["puts"] if _in_range(r["strike"])],
                     "calls": [r for r in d["calls"] if _in_range(r["strike"])]}
