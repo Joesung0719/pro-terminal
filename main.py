@@ -1245,14 +1245,18 @@ def _cboe_options(sym: str):
 def _nasdaq_options(sym: str):
     """備援：Nasdaq 公開期權鏈。無 IV 欄位(一律 None，不猜)；缺值保持 None/0。"""
     def _load():
-        r = requests.get(
-            f"https://api.nasdaq.com/api/quote/{sym}/option-chain",
-            params={"assetclass": "stocks", "limit": 5000, "fromdate": "all", "todate": "all",
-                    "excode": "oprac", "callput": "callput", "money": "all", "type": "all"},
-            headers={**_BROWSER_HEADERS, "Referer": "https://www.nasdaq.com/", "Origin": "https://www.nasdaq.com"},
-            timeout=25)
-        r.raise_for_status()
-        rows = (((r.json() or {}).get("data") or {}).get("table") or {}).get("rows") or []
+        rows = []
+        for ac in ("stocks", "etf"):             # 個股用 stocks，ETF（如 SPY）用 etf
+            r = requests.get(
+                f"https://api.nasdaq.com/api/quote/{sym}/option-chain",
+                params={"assetclass": ac, "limit": 5000, "fromdate": "all", "todate": "all",
+                        "excode": "oprac", "callput": "callput", "money": "all", "type": "all"},
+                headers={**_BROWSER_HEADERS, "Referer": "https://www.nasdaq.com/", "Origin": "https://www.nasdaq.com"},
+                timeout=25)
+            r.raise_for_status()
+            rows = (((r.json() or {}).get("data") or {}).get("table") or {}).get("rows") or []
+            if rows:
+                break
         today = et_now().strftime("%Y-%m-%d")
         out, cur = {}, None
         def _p(v):
